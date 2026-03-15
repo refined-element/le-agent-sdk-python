@@ -63,7 +63,7 @@ class AgentServiceAgreement:
                     agr.agreed_price_sats = int(tag[1])
                 except (ValueError, TypeError):
                     agr.agreed_price_sats = 0
-            elif key == "l402_endpoint" and len(tag) > 1:
+            elif key == "l402" and len(tag) > 1:
                 agr.l402_endpoint = tag[1]
             elif key == "terms" and len(tag) > 1:
                 agr.terms = tag[1]
@@ -135,7 +135,7 @@ class AgentServiceAgreement:
             tags.append(["price", str(self.agreed_price_sats)])
 
         if self.l402_endpoint:
-            tags.append(["l402_endpoint", self.l402_endpoint])
+            tags.append(["l402", self.l402_endpoint])
 
         if self.terms:
             tags.append(["terms", self.terms])

@@ -60,7 +60,7 @@ class TestAgentCapability:
                 ["s", "translation"],
                 ["price", "10", "sats", "per-request"],
                 ["price", "1", "sats", "per-token"],
-                ["l402_endpoint", "https://api.example.com/l402/translate"],
+                ["l402", "https://api.example.com/l402/translate"],
                 ["api_endpoint", "https://api.example.com/translate"],
                 ["api_method", "POST"],
                 ["schema", "https://api.example.com/schema.json"],
@@ -102,7 +102,7 @@ class TestAgentCapability:
         assert ["d", "test-svc"] in tags
         assert ["s", "ai"] in tags
         assert ["price", "5", "sats", "per-request"] in tags
-        assert ["l402_endpoint", "https://example.com/l402"] in tags
+        assert ["l402", "https://example.com/l402"] in tags
         assert ["t", "test"] in tags
 
     def test_roundtrip(self):
@@ -242,7 +242,7 @@ class TestAgentServiceAgreement:
                 ["p", "provider_pub"],
                 ["p", "requester_pub"],
                 ["price", "100"],
-                ["l402_endpoint", "https://api.example.com/l402/service"],
+                ["l402", "https://api.example.com/l402/service"],
                 ["terms", "Max 10 requests per minute"],
                 ["expiration", "1700100000"],
             ],
@@ -281,7 +281,7 @@ class TestAgentServiceAgreement:
         assert len(e_tags) == 2
         assert len(p_tags) == 2
         assert ["price", "50"] in tags
-        assert ["l402_endpoint", "https://example.com/l402"] in tags
+        assert ["l402", "https://example.com/l402"] in tags
         assert ["terms", "Terms here"] in tags
         assert ["expiration", "1800000000"] in tags
 

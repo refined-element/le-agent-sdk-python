@@ -73,7 +73,7 @@ class AgentCapability:
                 cap.categories.append(tag[1])
             elif key == "price" and len(tag) > 1:
                 cap.pricing.append(AgentPricing.from_tag(tag))
-            elif key == "l402_endpoint" and len(tag) > 1:
+            elif key == "l402" and len(tag) > 1:
                 cap.l402_endpoint = tag[1]
             elif key == "api_endpoint" and len(tag) > 1:
                 cap.api_endpoint = tag[1]
@@ -100,7 +100,7 @@ class AgentCapability:
             tags.append(p.to_tag())
 
         if self.l402_endpoint:
-            tags.append(["l402_endpoint", self.l402_endpoint])
+            tags.append(["l402", self.l402_endpoint])
 
         if self.api_endpoint:
             tags.append(["api_endpoint", self.api_endpoint])

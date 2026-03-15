@@ -149,6 +149,61 @@ class TestAgentCapability:
     def test_kind_constant(self):
         assert AgentCapability.KIND == 38400
 
+    def test_negotiable_default_true(self):
+        cap = AgentCapability()
+        assert cap.negotiable is True
+        assert cap.min_price_sats is None
+        tags = cap.to_nostr_tags()
+        assert ["negotiable", "true"] in tags
+
+    def test_negotiable_false(self):
+        cap = AgentCapability(negotiable=False)
+        tags = cap.to_nostr_tags()
+        assert ["negotiable", "false"] in tags
+        assert ["negotiable", "true"] not in tags
+
+    def test_negotiable_floor(self):
+        cap = AgentCapability(negotiable=True, min_price_sats=30000)
+        tags = cap.to_nostr_tags()
+        assert ["negotiable", "floor", "30000"] in tags
+
+    def test_negotiable_parse_false(self):
+        event = {
+            "tags": [["d", "svc"], ["negotiable", "false"]],
+            "content": "",
+        }
+        cap = AgentCapability.from_nostr_event(event)
+        assert cap.negotiable is False
+        assert cap.min_price_sats is None
+
+    def test_negotiable_parse_floor(self):
+        event = {
+            "tags": [["d", "svc"], ["negotiable", "floor", "10000"]],
+            "content": "",
+        }
+        cap = AgentCapability.from_nostr_event(event)
+        assert cap.negotiable is True
+        assert cap.min_price_sats == 10000
+
+    def test_negotiable_roundtrip_floor(self):
+        cap = AgentCapability(
+            service_id="floor-rt",
+            negotiable=True,
+            min_price_sats=5000,
+        )
+        tags = cap.to_nostr_tags()
+        event = {
+            "id": "rt",
+            "pubkey": "pk",
+            "created_at": 1,
+            "kind": 38400,
+            "content": "",
+            "tags": tags,
+        }
+        restored = AgentCapability.from_nostr_event(event)
+        assert restored.negotiable is True
+        assert restored.min_price_sats == 5000
+
 
 # --- AgentServiceRequest ---
 

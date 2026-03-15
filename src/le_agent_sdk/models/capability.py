@@ -45,6 +45,8 @@ class AgentCapability:
     api_method: Optional[str] = None
     schema_url: Optional[str] = None
     hashtags: list[str] = field(default_factory=list)
+    negotiable: bool = True
+    min_price_sats: Optional[int] = None
     # Set by relay / event parsing
     event_id: str = ""
     pubkey: str = ""
@@ -83,6 +85,14 @@ class AgentCapability:
                 cap.schema_url = tag[1]
             elif key == "t" and len(tag) > 1:
                 cap.hashtags.append(tag[1])
+            elif key == "negotiable" and len(tag) > 1:
+                if tag[1] == "false":
+                    cap.negotiable = False
+                elif tag[1] == "true":
+                    cap.negotiable = True
+                elif tag[1] == "floor" and len(tag) > 2:
+                    cap.negotiable = True
+                    cap.min_price_sats = int(tag[2])
 
         return cap
 
@@ -113,5 +123,12 @@ class AgentCapability:
 
         for ht in self.hashtags:
             tags.append(["t", ht])
+
+        if self.min_price_sats is not None:
+            tags.append(["negotiable", "floor", str(self.min_price_sats)])
+        elif not self.negotiable:
+            tags.append(["negotiable", "false"])
+        else:
+            tags.append(["negotiable", "true"])
 
         return tags

@@ -1,0 +1,483 @@
+"""L402 HTTP client for agent service settlement.
+
+Wraps httpx with automatic L402 challenge handling. If `l402-requests` is
+installed, delegates to its AsyncL402Client for full wallet integration.
+Otherwise provides a basic implementation that extracts challenges.
+
+Also provides Producer API methods for agents acting as service providers:
+- create_challenge: Create an L402 invoice+macaroon for a requester to pay
+- verify_payment: Verify an L402 token to confirm payment before delivering service
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import re
+from dataclasses import dataclass
+from typing import Any, Optional
+
+import httpx
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class L402Challenge:
+    """Parsed L402 challenge from a WWW-Authenticate header."""
+
+    macaroon: str
+    invoice: str
+
+    @property
+    def authorization_header(self) -> str:
+        """Format as L402 Authorization header value (needs preimage appended)."""
+        return f"L402 {self.macaroon}"
+
+
+# Pattern for parsing L402/LSAT challenges
+_CHALLENGE_RE = re.compile(
+    r'(?:L402|LSAT)\s+'
+    r'macaroon="?(?P<macaroon>[^",\s]+)"?\s*,\s*'
+    r'invoice="?(?P<invoice>[^",\s]+)"?',
+    re.IGNORECASE,
+)
+
+
+def parse_l402_challenge(headers: dict[str, str]) -> Optional[L402Challenge]:
+    """Extract an L402 challenge from response headers.
+
+    Args:
+        headers: HTTP response headers dict.
+
+    Returns:
+        Parsed challenge or None.
+    """
+    lower_headers = {k.lower(): v for k, v in headers.items()}
+    www_auth = lower_headers.get("www-authenticate", "")
+    if not www_auth:
+        return None
+
+    match = _CHALLENGE_RE.search(www_auth)
+    if not match:
+        return None
+
+    return L402Challenge(
+        macaroon=match.group("macaroon").strip(),
+        invoice=match.group("invoice").strip(),
+    )
+
+
+class L402Client:
+    """Async HTTP client with L402 payment support.
+
+    For full auto-payment, configure with a wallet callback. Otherwise,
+    challenges are returned for external payment handling.
+    """
+
+    def __init__(
+        self,
+        pay_invoice_callback: Optional[Any] = None,
+        preimage_cache: Optional[dict[str, str]] = None,
+        max_amount_sats: Optional[int] = None,
+        **httpx_kwargs: Any,
+    ) -> None:
+        """
+        Args:
+            pay_invoice_callback: Async callable(invoice: str) -> preimage: str.
+                If provided, invoices are paid automatically.
+            preimage_cache: Optional dict mapping macaroon -> preimage for reuse.
+            max_amount_sats: Maximum payment amount in satoshis. If an invoice
+                exceeds this limit, the payment is rejected. None means no limit.
+            **httpx_kwargs: Additional kwargs passed to httpx.AsyncClient.
+        """
+        self._pay_callback = pay_invoice_callback
+        self._cache: dict[str, str] = preimage_cache or {}
+        self._max_amount_sats = max_amount_sats
+        self._httpx_kwargs = httpx_kwargs
+        self._client: Optional[httpx.AsyncClient] = None
+
+    def _ensure_client(self) -> httpx.AsyncClient:
+        if self._client is None:
+            self._client = httpx.AsyncClient(**self._httpx_kwargs)
+        return self._client
+
+    @staticmethod
+    def _decode_invoice_amount_sats(invoice: str) -> Optional[int]:
+        """Extract the amount in satoshis from a BOLT-11 invoice string.
+
+        Returns None if the amount cannot be parsed.
+        """
+        # BOLT-11: starts with "ln" then network (bc/tb/etc), then optional amount
+        # Amount is encoded as: <number><multiplier> where multipliers are:
+        # m=milli, u=micro, n=nano, p=pico (of BTC)
+        inv_lower = invoice.lower()
+        # Strip "lightning:" prefix if present
+        if inv_lower.startswith("lightning:"):
+            inv_lower = inv_lower[10:]
+
+        match = re.match(r"ln\w+?(\d+)([munp])1", inv_lower)
+        if not match:
+            return None
+
+        amount_num = int(match.group(1))
+        multiplier = match.group(2)
+        # Convert to satoshis (1 BTC = 100_000_000 sats)
+        multiplier_map = {
+            "m": 100_000_00,     # milli-BTC = 100,000 sats (0.001 BTC)
+            "u": 100_00,         # micro-BTC = 100 sats (0.000001 BTC)
+            "n": 0.01,           # nano-BTC = 0.01 sats
+            "p": 0.00001,        # pico-BTC = 0.00001 sats
+        }
+        # milli = 10^-3 BTC = 10^5 sats
+        btc_multipliers = {"m": 1e-3, "u": 1e-6, "n": 1e-9, "p": 1e-12}
+        btc_amount = amount_num * btc_multipliers[multiplier]
+        sats = int(btc_amount * 1e8)
+        return sats
+
+    @staticmethod
+    def _validate_preimage(preimage: str) -> bool:
+        """Validate that a preimage is a 64-character hex string."""
+        if not isinstance(preimage, str) or len(preimage) != 64:
+            return False
+        try:
+            bytes.fromhex(preimage)
+            return True
+        except ValueError:
+            return False
+
+    async def access(
+        self,
+        url: str,
+        method: str = "GET",
+        headers: Optional[dict[str, str]] = None,
+        max_amount_sats: Optional[int] = None,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        """Access an L402-protected resource.
+
+        If a cached credential exists, it is used. If a 402 is received and
+        a pay callback is configured, the invoice is paid and the request retried.
+
+        Args:
+            url: Target URL.
+            method: HTTP method.
+            headers: Optional request headers.
+            max_amount_sats: Override max payment amount for this request.
+                Falls back to the instance-level max_amount_sats.
+            **kwargs: Additional httpx request kwargs.
+
+        Returns:
+            The HTTP response (either direct or after L402 payment).
+
+        Raises:
+            ValueError: If the invoice amount exceeds max_amount_sats.
+        """
+        headers = dict(headers or {})
+        client = self._ensure_client()
+
+        response = await client.request(method, url, headers=headers, **kwargs)
+
+        if response.status_code != 402:
+            return response
+
+        challenge = parse_l402_challenge(dict(response.headers))
+        if challenge is None:
+            return response
+
+        if self._pay_callback is None:
+            # No auto-pay; return the 402 so caller can handle it
+            return response
+
+        # Check invoice amount against limit
+        effective_max = max_amount_sats if max_amount_sats is not None else self._max_amount_sats
+        if effective_max is not None:
+            invoice_sats = self._decode_invoice_amount_sats(challenge.invoice)
+            if invoice_sats is not None and invoice_sats > effective_max:
+                raise ValueError(
+                    f"Invoice amount ({invoice_sats} sats) exceeds maximum allowed "
+                    f"({effective_max} sats). Invoice: {challenge.invoice[:40]}..."
+                )
+
+        # Pay the invoice with error handling on the callback
+        try:
+            preimage = await self._pay_callback(challenge.invoice)
+        except Exception as exc:
+            logger.error("pay_invoice_callback failed: %s", exc)
+            raise RuntimeError(f"Payment callback failed: {exc}") from exc
+
+        # Validate preimage format
+        if not self._validate_preimage(preimage):
+            logger.error(
+                "Invalid preimage returned from pay callback: expected 64-char hex, "
+                "got %r (length=%d)",
+                preimage[:20] if isinstance(preimage, str) else type(preimage),
+                len(preimage) if isinstance(preimage, str) else 0,
+            )
+            raise ValueError(
+                f"Invalid preimage from payment callback: expected 64-character hex string, "
+                f"got length {len(preimage) if isinstance(preimage, str) else 'N/A'}"
+            )
+
+        self._cache[challenge.macaroon] = preimage
+        logger.info(
+            "L402 payment succeeded. Preimage: %s (save this for recovery)", preimage
+        )
+
+        # Retry the request with L402 credentials, with retry+backoff
+        headers["Authorization"] = f"L402 {challenge.macaroon}:{preimage}"
+        max_retries = 3
+        last_exc: Optional[Exception] = None
+
+        for attempt in range(max_retries):
+            try:
+                retry_response = await client.request(method, url, headers=headers, **kwargs)
+                return retry_response
+            except Exception as exc:
+                last_exc = exc
+                logger.warning(
+                    "Authenticated retry attempt %d/%d failed: %s. "
+                    "Preimage for recovery: %s",
+                    attempt + 1, max_retries, exc, preimage,
+                )
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(0.5 * (2 ** attempt))
+
+        # All retries exhausted — log preimage for recovery
+        logger.error(
+            "All %d authenticated retries failed after payment. "
+            "IMPORTANT — save this preimage for manual recovery: %s",
+            max_retries, preimage,
+        )
+        raise RuntimeError(
+            f"Payment succeeded (preimage: {preimage}) but all {max_retries} "
+            f"authenticated retries failed: {last_exc}"
+        )
+
+    async def pay_and_access(
+        self,
+        url: str,
+        pay_invoice_callback: Any,
+        method: str = "GET",
+        headers: Optional[dict[str, str]] = None,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        """Full L402 flow: request, get 402, pay invoice, retry with token.
+
+        Args:
+            url: Target URL.
+            pay_invoice_callback: Async callable(invoice: str) -> preimage: str.
+            method: HTTP method.
+            headers: Optional request headers.
+            **kwargs: Additional httpx request kwargs.
+
+        Returns:
+            The final HTTP response after payment.
+        """
+        headers = dict(headers or {})
+        client = self._ensure_client()
+
+        response = await client.request(method, url, headers=headers, **kwargs)
+
+        if response.status_code != 402:
+            return response
+
+        challenge = parse_l402_challenge(dict(response.headers))
+        if challenge is None:
+            return response
+
+        preimage = await pay_invoice_callback(challenge.invoice)
+        self._cache[challenge.macaroon] = preimage
+
+        headers["Authorization"] = f"L402 {challenge.macaroon}:{preimage}"
+        retry_response = await client.request(method, url, headers=headers, **kwargs)
+        return retry_response
+
+    async def close(self) -> None:
+        """Close the underlying HTTP client."""
+        if self._client:
+            await self._client.aclose()
+            self._client = None
+
+    async def __aenter__(self) -> L402Client:
+        return self
+
+    async def __aexit__(self, *args: Any) -> None:
+        await self.close()
+
+
+@dataclass(frozen=True)
+class L402ChallengeResponse:
+    """Response from the Lightning Enable Producer API create_challenge endpoint."""
+
+    success: bool
+    invoice: Optional[str] = None
+    macaroon: Optional[str] = None
+    payment_hash: Optional[str] = None
+    expires_at: Optional[str] = None
+    error: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class L402VerifyResponse:
+    """Response from the Lightning Enable Producer API verify endpoint."""
+
+    success: bool
+    valid: bool = False
+    resource: Optional[str] = None
+    error: Optional[str] = None
+
+
+class L402ProducerClient:
+    """Client for the Lightning Enable Producer API.
+
+    Enables agents to act as service providers by creating L402 challenges
+    (invoices) and verifying payments. This is the provider/seller side
+    of the L402 protocol.
+
+    Requires a Lightning Enable API key with an Agentic Commerce subscription.
+    """
+
+    def __init__(
+        self,
+        le_api_key: str,
+        le_api_base_url: str = "https://api.lightningenable.com",
+        **httpx_kwargs: Any,
+    ) -> None:
+        """
+        Args:
+            le_api_key: Lightning Enable merchant API key (X-Api-Key header).
+            le_api_base_url: Base URL for the Lightning Enable API.
+            **httpx_kwargs: Additional kwargs passed to httpx.AsyncClient.
+        """
+        self._api_key = le_api_key
+        self._base_url = le_api_base_url.rstrip("/")
+        self._httpx_kwargs = httpx_kwargs
+        self._client: Optional[httpx.AsyncClient] = None
+
+    def _ensure_client(self) -> httpx.AsyncClient:
+        if self._client is None:
+            headers = {
+                "X-Api-Key": self._api_key,
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "User-Agent": "LE-Agent-SDK-Python/0.1.0",
+            }
+            self._client = httpx.AsyncClient(headers=headers, **self._httpx_kwargs)
+        return self._client
+
+    async def create_challenge(
+        self,
+        resource: str,
+        price_sats: int,
+        description: Optional[str] = None,
+    ) -> L402ChallengeResponse:
+        """Create an L402 challenge (Lightning invoice + macaroon) for a resource.
+
+        The provider calls this to generate an invoice at the negotiated price.
+        The resulting invoice and macaroon are shared with the requester (e.g., via
+        Nostr DM or in the agreement event) for payment.
+
+        Args:
+            resource: Resource identifier (URL, service name, or description).
+            price_sats: Price in satoshis to charge.
+            description: Optional description shown on the Lightning invoice.
+
+        Returns:
+            L402ChallengeResponse with invoice, macaroon, and payment_hash.
+        """
+        if price_sats <= 0:
+            return L402ChallengeResponse(
+                success=False,
+                error="Price must be greater than 0 sats",
+            )
+
+        client = self._ensure_client()
+        body = {"resource": resource, "priceSats": price_sats}
+        if description:
+            body["description"] = description
+
+        try:
+            response = await client.post(
+                f"{self._base_url}/api/l402/challenges",
+                json=body,
+            )
+
+            if response.status_code != 200:
+                error_msg = f"API returned {response.status_code}"
+                try:
+                    data = response.json()
+                    error_msg = data.get("message") or data.get("error") or error_msg
+                except Exception:
+                    pass
+                return L402ChallengeResponse(success=False, error=error_msg)
+
+            data = response.json()
+            return L402ChallengeResponse(
+                success=True,
+                invoice=data.get("invoice"),
+                macaroon=data.get("macaroon"),
+                payment_hash=data.get("paymentHash"),
+                expires_at=data.get("expiresAt"),
+            )
+        except httpx.TimeoutException:
+            return L402ChallengeResponse(success=False, error="Request timed out")
+        except httpx.HTTPError as exc:
+            return L402ChallengeResponse(success=False, error=f"HTTP error: {exc}")
+
+    async def verify_payment(
+        self,
+        macaroon: str,
+        preimage: str,
+    ) -> L402VerifyResponse:
+        """Verify an L402 token (macaroon + preimage) to confirm payment.
+
+        The provider calls this after receiving an L402 token from the requester
+        to validate that the invoice has been paid before delivering the service.
+
+        Args:
+            macaroon: Base64-encoded macaroon from the L402 token.
+            preimage: Hex-encoded preimage (proof of payment).
+
+        Returns:
+            L402VerifyResponse indicating whether the payment is valid.
+        """
+        client = self._ensure_client()
+
+        try:
+            response = await client.post(
+                f"{self._base_url}/api/l402/challenges/verify",
+                json={"macaroon": macaroon.strip(), "preimage": preimage.strip()},
+            )
+
+            if response.status_code != 200:
+                error_msg = f"API returned {response.status_code}"
+                try:
+                    data = response.json()
+                    error_msg = data.get("message") or data.get("error") or error_msg
+                except Exception:
+                    pass
+                return L402VerifyResponse(success=False, error=error_msg)
+
+            data = response.json()
+            return L402VerifyResponse(
+                success=True,
+                valid=data.get("valid", False),
+                resource=data.get("resource"),
+            )
+        except httpx.TimeoutException:
+            return L402VerifyResponse(success=False, error="Request timed out")
+        except httpx.HTTPError as exc:
+            return L402VerifyResponse(success=False, error=f"HTTP error: {exc}")
+
+    async def close(self) -> None:
+        """Close the underlying HTTP client."""
+        if self._client:
+            await self._client.aclose()
+            self._client = None
+
+    async def __aenter__(self) -> L402ProducerClient:
+        return self
+
+    async def __aexit__(self, *args: Any) -> None:
+        await self.close()

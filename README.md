@@ -125,9 +125,11 @@ Settlement happens via L402 (Lightning HTTP 402) through Lightning Enable endpoi
 
 ## Related Projects
 
-- [l402-requests](https://github.com/ArcadeLabsInc/l402-requests) -- Python L402 HTTP client
+- [le-agent-sdk (TypeScript)](https://github.com/refined-element/le-agent-sdk-ts) -- `npm install le-agent-sdk`
+- [le-agent-sdk (.NET)](https://github.com/refined-element/le-agent-sdk-dotnet) -- `dotnet add package LightningEnable.AgentSdk`
+- [Lightning Enable MCP Server](https://github.com/refined-element/lightning-enable-mcp) -- MCP server with ASA tools for AI agents
+- [l402-requests](https://github.com/refined-element/l402-requests) -- Python L402 HTTP client
 - [Lightning Enable](https://lightningenable.com) -- L402 infrastructure and agent payment rails
-- [NostrWolfe](https://github.com/ArcadeLabsInc/nostrwolfe-ios) -- Nostr client with native L402 support
 
 ## License
 

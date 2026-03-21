@@ -59,21 +59,24 @@ _AUTH_SCHEME_SPLIT = re.compile(
     r'(?:^|,\s*)(?=[A-Za-z][A-Za-z0-9!#$&\-^_`|~]*\s)',
 )
 # Match parameters inside a Payment challenge's parameter list, ensuring we
-# only match full parameter names (not substrings of longer names).
+# only match full parameter names at proper boundaries (start-of-string,
+# whitespace, or comma — covers the full RFC 7230 tchar set).
+# Also supports both quoted and unquoted (bare token) auth-param values
+# per HTTP auth header grammar.
 _MPP_INVOICE_RE = re.compile(
-    r'(?<![A-Za-z0-9_-])invoice="(?P<invoice>[^"]+)"',
+    r'(?:^|[\s,])invoice="?(?P<invoice>[^",\s]+)"?',
     re.IGNORECASE,
 )
 _MPP_METHOD_RE = re.compile(
-    r'(?<![A-Za-z0-9_-])method="lightning"',
+    r'(?:^|[\s,])method="?lightning"?',
     re.IGNORECASE,
 )
 _MPP_AMOUNT_RE = re.compile(
-    r'(?<![A-Za-z0-9_-])amount="(?P<amount>[^"]+)"',
+    r'(?:^|[\s,])amount="?(?P<amount>[^",\s]+)"?',
     re.IGNORECASE,
 )
 _MPP_REALM_RE = re.compile(
-    r'(?<![A-Za-z0-9_-])realm="(?P<realm>[^"]+)"',
+    r'(?:^|[\s,])realm="?(?P<realm>[^",\s]+)"?',
     re.IGNORECASE,
 )
 
@@ -346,15 +349,13 @@ class L402Client:
         # Build the correct Authorization header based on challenge type
         if isinstance(challenge, MppChallenge):
             auth_header = f'Payment method="lightning", preimage="{preimage}"'
-            logger.info(
-                "MPP payment succeeded. Preimage: %s (save this for recovery)", preimage
-            )
+            logger.info("MPP payment succeeded for %s", url)
+            logger.debug("MPP preimage (first 8 chars): %.8s...", preimage)
         else:
             self._cache[challenge.macaroon] = preimage
             auth_header = f"L402 {challenge.macaroon}:{preimage}"
-            logger.info(
-                "L402 payment succeeded. Preimage: %s (save this for recovery)", preimage
-            )
+            logger.info("L402 payment succeeded for %s", url)
+            logger.debug("L402 preimage (first 8 chars): %.8s...", preimage)
 
         # Retry the request with credentials, with retry+backoff
         headers["Authorization"] = auth_header
@@ -369,20 +370,23 @@ class L402Client:
                 last_exc = exc
                 logger.warning(
                     "Authenticated retry attempt %d/%d failed: %s. "
-                    "Preimage for recovery: %s",
+                    "Preimage prefix for recovery: %.8s...",
                     attempt + 1, max_retries, exc, preimage,
                 )
                 if attempt < max_retries - 1:
                     await asyncio.sleep(0.5 * (2 ** attempt))
 
-        # All retries exhausted — log preimage for recovery
+        # All retries exhausted — log preimage prefix for recovery identification
         logger.error(
             "All %d authenticated retries failed after payment. "
-            "IMPORTANT — save this preimage for manual recovery: %s",
+            "Preimage prefix for recovery: %.8s... (enable DEBUG logging for full value)",
             max_retries, preimage,
         )
+        logger.debug(
+            "Full preimage for manual recovery: %s", preimage,
+        )
         raise RuntimeError(
-            f"Payment succeeded (preimage: {preimage}) but all {max_retries} "
+            f"Payment succeeded (preimage prefix: {preimage[:8]}...) but all {max_retries} "
             f"authenticated retries failed: {last_exc}"
         )
 

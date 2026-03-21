@@ -8,7 +8,6 @@ from le_agent_sdk.l402.client import (
     L402Challenge,
     L402Client,
     L402ProducerClient,
-    L402VerifyResponse,
     MppChallenge,
     parse_l402_challenge,
     parse_mpp_challenge,
@@ -337,6 +336,14 @@ class TestMppChallengeParsing:
         assert result.invoice == "lnbc100n1pjtest"
         # The Bearer realm must NOT be captured
         assert result.realm is None
+
+    def test_parse_unquoted_values(self):
+        """Bare token (unquoted) auth-param values should parse correctly."""
+        header = 'Payment method=lightning, invoice=lnbc100n1pjtest, amount=100, realm=api.example.com'
+        result = parse_mpp_challenge(header)
+        assert result.invoice == "lnbc100n1pjtest"
+        assert result.amount == "100"
+        assert result.realm == "api.example.com"
 
     def test_realm_scoped_with_trailing_scheme(self):
         """Realm from a trailing scheme must not leak into a Payment challenge."""

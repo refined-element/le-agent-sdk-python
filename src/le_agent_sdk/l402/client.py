@@ -53,8 +53,10 @@ _CHALLENGE_RE = re.compile(
 )
 
 # Patterns for parsing MPP (Machine Payments Protocol) challenges
+# Match the full Payment challenge segment (up to end-of-string or next scheme)
+# so that amount/realm extraction is scoped to this challenge only.
 _MPP_CHALLENGE_RE = re.compile(
-    r'Payment\s+.*?method="lightning".*?invoice="(?P<invoice>[^"]+)"',
+    r'Payment\s+(?=(?:[^,]*,\s*)*method="lightning")(?P<params>(?:[^,]*,\s*)*invoice="(?P<invoice>[^"]+)"[^,]*(?:,\s*[^,]*)*)',
     re.IGNORECASE,
 )
 _MPP_AMOUNT_RE = re.compile(r'amount="(?P<amount>[^"]+)"', re.IGNORECASE)
@@ -101,9 +103,13 @@ def parse_mpp_challenge(header: str) -> MppChallenge:
     if not match:
         raise ValueError(f"Invalid MPP challenge: {header[:80]}")
 
+    # Extract the matched Payment segment only so that amount/realm from
+    # other schemes (e.g. "Bearer realm=...") are not accidentally captured.
+    payment_segment = match.group(0)
+
     invoice = match.group("invoice")
-    amount_match = _MPP_AMOUNT_RE.search(header)
-    realm_match = _MPP_REALM_RE.search(header)
+    amount_match = _MPP_AMOUNT_RE.search(payment_segment)
+    realm_match = _MPP_REALM_RE.search(payment_segment)
 
     return MppChallenge(
         invoice=invoice,
@@ -381,6 +387,19 @@ class L402Client:
 
         preimage = await pay_invoice_callback(challenge.invoice)
 
+        # Validate preimage format before constructing credentials
+        if not self._validate_preimage(preimage):
+            logger.error(
+                "Invalid preimage returned from pay callback in pay_and_access: "
+                "expected 64-char hex, got %r (length=%d)",
+                preimage[:20] if isinstance(preimage, str) else type(preimage),
+                len(preimage) if isinstance(preimage, str) else 0,
+            )
+            raise ValueError(
+                f"Invalid preimage from payment callback: expected 64-character hex string, "
+                f"got length {len(preimage) if isinstance(preimage, str) else 'N/A'}"
+            )
+
         # Build the correct Authorization header based on challenge type
         if isinstance(challenge, MppChallenge):
             headers["Authorization"] = f'Payment method="lightning", preimage="{preimage}"'
@@ -525,8 +544,9 @@ class L402ProducerClient:
 
     async def verify_payment(
         self,
-        preimage: str,
         macaroon: Optional[str] = None,
+        *,
+        preimage: str,
     ) -> L402VerifyResponse:
         """Verify an L402 or MPP token to confirm payment.
 
@@ -537,9 +557,9 @@ class L402ProducerClient:
         to validate that the invoice has been paid before delivering the service.
 
         Args:
-            preimage: Hex-encoded preimage (proof of payment).
             macaroon: Base64-encoded macaroon from the L402 token. Optional for
                 MPP payments where only a preimage is provided.
+            preimage: Hex-encoded preimage (proof of payment). Keyword-only.
 
         Returns:
             L402VerifyResponse indicating whether the payment is valid.

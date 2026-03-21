@@ -119,6 +119,17 @@ class TestMppChallengeParsing:
         with pytest.raises(AttributeError):
             c.invoice = "changed"
 
+    def test_realm_scoped_to_payment_segment(self):
+        """Realm from a different scheme (Bearer) must not leak into MPP."""
+        header = (
+            'Bearer realm="other-service.com", '
+            'Payment method="lightning", invoice="lnbc100n1pjtest"'
+        )
+        result = parse_mpp_challenge(header)
+        assert result.invoice == "lnbc100n1pjtest"
+        # The Bearer realm must NOT be captured
+        assert result.realm is None
+
 
 class TestParsePaymentChallenge:
     def test_l402_preferred(self):

@@ -130,6 +130,17 @@ class TestMppChallengeParsing:
         # The Bearer realm must NOT be captured
         assert result.realm is None
 
+    def test_realm_scoped_with_trailing_scheme(self):
+        """Realm from a trailing scheme must not leak into a Payment challenge."""
+        header = (
+            'Payment method="lightning", invoice="lnbc100n1pjtest", '
+            'Bearer realm="other-service.com"'
+        )
+        result = parse_mpp_challenge(header)
+        assert result.invoice == "lnbc100n1pjtest"
+        # The trailing Bearer realm must NOT be captured
+        assert result.realm is None
+
 
 class TestParsePaymentChallenge:
     def test_l402_preferred(self):

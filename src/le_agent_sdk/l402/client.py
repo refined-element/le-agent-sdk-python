@@ -53,12 +53,14 @@ _CHALLENGE_RE = re.compile(
 )
 
 # Patterns for parsing MPP (Machine Payments Protocol) challenges
-# Match the full Payment challenge segment (up to end-of-string or next scheme)
-# so that amount/realm extraction is scoped to this challenge only.
-_MPP_CHALLENGE_RE = re.compile(
-    r'Payment\s+(?=(?:[^,]*,\s*)*method="lightning")(?P<params>(?:[^,]*,\s*)*invoice="(?P<invoice>[^"]+)"[^,]*(?:,\s*[^,]*)*)',
-    re.IGNORECASE,
+# _AUTH_SCHEME_SPLIT splits a WWW-Authenticate value into individual challenges
+# by detecting auth-scheme token boundaries (e.g. "Bearer ...", "Payment ...").
+_AUTH_SCHEME_SPLIT = re.compile(
+    r'(?:^|,\s*)(?=[A-Za-z][A-Za-z0-9!#$&\-^_`|~]*\s)',
 )
+# Match invoice inside a Payment challenge's parameter list
+_MPP_INVOICE_RE = re.compile(r'invoice="(?P<invoice>[^"]+)"', re.IGNORECASE)
+_MPP_METHOD_RE = re.compile(r'method="lightning"', re.IGNORECASE)
 _MPP_AMOUNT_RE = re.compile(r'amount="(?P<amount>[^"]+)"', re.IGNORECASE)
 _MPP_REALM_RE = re.compile(r'realm="(?P<realm>[^"]+)"', re.IGNORECASE)
 
@@ -87,6 +89,21 @@ def parse_l402_challenge(headers: dict[str, str]) -> Optional[L402Challenge]:
     )
 
 
+def _extract_payment_segment(header: str) -> Optional[str]:
+    """Extract only the Payment challenge segment from a WWW-Authenticate value.
+
+    Splits the header at auth-scheme boundaries so that parameters from
+    other schemes (e.g. Bearer realm=...) are never included.
+    """
+    # Split into individual challenge segments at auth-scheme boundaries
+    segments = _AUTH_SCHEME_SPLIT.split(header)
+    for segment in segments:
+        stripped = segment.strip().rstrip(",").strip()
+        if stripped.upper().startswith("PAYMENT "):
+            return stripped
+    return None
+
+
 def parse_mpp_challenge(header: str) -> MppChallenge:
     """Parse a Payment (MPP) challenge from a WWW-Authenticate header value.
 
@@ -99,22 +116,26 @@ def parse_mpp_challenge(header: str) -> MppChallenge:
     Raises:
         ValueError: If the header is not a valid MPP challenge.
     """
-    match = _MPP_CHALLENGE_RE.search(header)
-    if not match:
+    payment_segment = _extract_payment_segment(header)
+    if payment_segment is None:
         raise ValueError(f"Invalid MPP challenge: {header[:80]}")
 
-    # Extract the matched Payment segment only so that amount/realm from
-    # other schemes (e.g. "Bearer realm=...") are not accidentally captured.
-    payment_segment = match.group(0)
+    # Verify method="lightning" within the Payment segment
+    if not _MPP_METHOD_RE.search(payment_segment):
+        raise ValueError(f"Invalid MPP challenge: {header[:80]}")
 
-    invoice = match.group("invoice")
+    invoice_match = _MPP_INVOICE_RE.search(payment_segment)
+    if not invoice_match:
+        raise ValueError(f"Invalid MPP challenge: {header[:80]}")
+
+    invoice = invoice_match.group("invoice").strip()
     amount_match = _MPP_AMOUNT_RE.search(payment_segment)
     realm_match = _MPP_REALM_RE.search(payment_segment)
 
     return MppChallenge(
         invoice=invoice,
-        amount=amount_match.group("amount") if amount_match else None,
-        realm=realm_match.group("realm") if realm_match else None,
+        amount=amount_match.group("amount").strip() if amount_match else None,
+        realm=realm_match.group("realm").strip() if realm_match else None,
     )
 
 
@@ -545,8 +566,7 @@ class L402ProducerClient:
     async def verify_payment(
         self,
         macaroon: Optional[str] = None,
-        *,
-        preimage: str,
+        preimage: str = "",
     ) -> L402VerifyResponse:
         """Verify an L402 or MPP token to confirm payment.
 
@@ -559,7 +579,7 @@ class L402ProducerClient:
         Args:
             macaroon: Base64-encoded macaroon from the L402 token. Optional for
                 MPP payments where only a preimage is provided.
-            preimage: Hex-encoded preimage (proof of payment). Keyword-only.
+            preimage: Hex-encoded preimage (proof of payment).
 
         Returns:
             L402VerifyResponse indicating whether the payment is valid.

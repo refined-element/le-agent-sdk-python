@@ -152,6 +152,65 @@ class TestL402ClientAccessFlow:
             assert retry_headers["Authorization"] == f'Payment method="lightning", preimage="{fake_preimage}"'
 
     @pytest.mark.asyncio
+    async def test_access_cache_hit_skips_payment(self):
+        """When a preimage is already cached for a macaroon, skip payment and use cached credential."""
+        cached_preimage = "aa" * 32
+
+        # 402 challenge with the same macaroon that's in the cache
+        response_402 = httpx.Response(
+            402,
+            headers={"WWW-Authenticate": 'L402 macaroon="mac_cached", invoice="lnbc100n1pjcache"'},
+            request=httpx.Request("GET", "https://api.example.com/cached-resource"),
+        )
+        response_200 = httpx.Response(
+            200,
+            json={"data": "cached-success"},
+            request=httpx.Request("GET", "https://api.example.com/cached-resource"),
+        )
+
+        pay_callback = AsyncMock(return_value="should_not_be_called")
+
+        with patch("httpx.AsyncClient.request", new_callable=AsyncMock, side_effect=[response_402, response_200]) as mock_request:
+            cache = {"mac_cached": cached_preimage}
+            async with L402Client(pay_invoice_callback=pay_callback, preimage_cache=cache) as client:
+                result = await client.access("https://api.example.com/cached-resource")
+
+            assert result.status_code == 200
+            # Pay callback must NOT have been called — cache hit should skip payment
+            pay_callback.assert_not_awaited()
+            # Verify the retry used the cached preimage
+            retry_call = mock_request.call_args_list[1]
+            retry_headers = retry_call.kwargs.get("headers", {})
+            assert retry_headers["Authorization"] == f"L402 mac_cached:{cached_preimage}"
+
+    @pytest.mark.asyncio
+    async def test_access_cache_miss_pays_and_caches(self):
+        """When macaroon is not in cache, pay normally and verify the preimage gets cached."""
+        new_preimage = "bb" * 32
+
+        response_402 = httpx.Response(
+            402,
+            headers={"WWW-Authenticate": 'L402 macaroon="mac_new", invoice="lnbc100n1pjnew"'},
+            request=httpx.Request("GET", "https://api.example.com/new-resource"),
+        )
+        response_200 = httpx.Response(
+            200,
+            json={"data": "new-success"},
+            request=httpx.Request("GET", "https://api.example.com/new-resource"),
+        )
+
+        pay_callback = AsyncMock(return_value=new_preimage)
+
+        with patch("httpx.AsyncClient.request", new_callable=AsyncMock, side_effect=[response_402, response_200]):
+            async with L402Client(pay_invoice_callback=pay_callback) as client:
+                result = await client.access("https://api.example.com/new-resource")
+
+                assert result.status_code == 200
+                pay_callback.assert_awaited_once_with("lnbc100n1pjnew")
+                # Verify the preimage was stored in the internal cache for future reuse
+                assert client._cache["mac_new"] == new_preimage
+
+    @pytest.mark.asyncio
     async def test_access_no_callback_returns_402(self):
         """Without a pay callback, 402 responses are returned as-is."""
         response_402 = httpx.Response(
@@ -231,6 +290,70 @@ class TestL402ClientPayAndAccessFlow:
             retry_call = mock_request.call_args_list[1]
             retry_headers = retry_call.kwargs.get("headers", {})
             assert retry_headers["Authorization"] == f'Payment method="lightning", preimage="{fake_preimage}"'
+
+    @pytest.mark.asyncio
+    async def test_pay_and_access_cache_hit_skips_payment(self):
+        """When a preimage is already cached, pay_and_access should skip payment and use cached credential."""
+        cached_preimage = "ff" * 32
+
+        response_402 = httpx.Response(
+            402,
+            headers={"WWW-Authenticate": 'L402 macaroon="mac_paa_cached", invoice="lnbc100n1pjpaacache"'},
+            request=httpx.Request("GET", "https://api.example.com/paa-cached"),
+        )
+        response_200 = httpx.Response(
+            200,
+            json={"data": "paa-cached-success"},
+            request=httpx.Request("GET", "https://api.example.com/paa-cached"),
+        )
+
+        pay_callback = AsyncMock(return_value="should_not_be_called")
+
+        with patch("httpx.AsyncClient.request", new_callable=AsyncMock, side_effect=[response_402, response_200]) as mock_request:
+            cache = {"mac_paa_cached": cached_preimage}
+            async with L402Client(preimage_cache=cache) as client:
+                result = await client.pay_and_access(
+                    "https://api.example.com/paa-cached",
+                    pay_invoice_callback=pay_callback,
+                )
+
+            assert result.status_code == 200
+            # Pay callback must NOT have been called — cache hit should skip payment
+            pay_callback.assert_not_awaited()
+            # Verify the retry used the cached preimage
+            retry_call = mock_request.call_args_list[1]
+            retry_headers = retry_call.kwargs.get("headers", {})
+            assert retry_headers["Authorization"] == f"L402 mac_paa_cached:{cached_preimage}"
+
+    @pytest.mark.asyncio
+    async def test_pay_and_access_cache_miss_pays_and_caches(self):
+        """When macaroon is not in cache, pay_and_access should pay and store preimage in cache."""
+        new_preimage = "dd" * 32
+
+        response_402 = httpx.Response(
+            402,
+            headers={"WWW-Authenticate": 'L402 macaroon="mac_paa_new", invoice="lnbc100n1pjpaanew"'},
+            request=httpx.Request("GET", "https://api.example.com/paa-new"),
+        )
+        response_200 = httpx.Response(
+            200,
+            json={"data": "paa-new-success"},
+            request=httpx.Request("GET", "https://api.example.com/paa-new"),
+        )
+
+        pay_callback = AsyncMock(return_value=new_preimage)
+
+        with patch("httpx.AsyncClient.request", new_callable=AsyncMock, side_effect=[response_402, response_200]):
+            async with L402Client() as client:
+                result = await client.pay_and_access(
+                    "https://api.example.com/paa-new",
+                    pay_invoice_callback=pay_callback,
+                )
+
+                assert result.status_code == 200
+                pay_callback.assert_awaited_once_with("lnbc100n1pjpaanew")
+                # Verify the preimage was stored in the internal cache
+                assert client._cache["mac_paa_new"] == new_preimage
 
     @pytest.mark.asyncio
     async def test_pay_and_access_callback_failure_raises(self):

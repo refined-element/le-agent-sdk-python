@@ -316,6 +316,14 @@ class L402Client:
             # No auto-pay; return the 402 so caller can handle it
             return response
 
+        # Check cache for an existing preimage (avoids duplicate payments)
+        if isinstance(challenge, L402Challenge) and challenge.macaroon in self._cache:
+            cached_preimage = self._cache[challenge.macaroon]
+            logger.info("Cache hit for macaroon, skipping payment for %s", url)
+            headers["Authorization"] = f"L402 {challenge.macaroon}:{cached_preimage}"
+            retry_response = await client.request(method, url, headers=headers, **kwargs)
+            return retry_response
+
         # Check invoice amount against limit
         effective_max = max_amount_sats if max_amount_sats is not None else self._max_amount_sats
         if effective_max is not None:
@@ -421,6 +429,14 @@ class L402Client:
             challenge = parse_payment_challenge(resp_headers)
         except ValueError:
             return response
+
+        # Check cache for an existing preimage (avoids duplicate payments)
+        if isinstance(challenge, L402Challenge) and challenge.macaroon in self._cache:
+            cached_preimage = self._cache[challenge.macaroon]
+            logger.info("Cache hit for macaroon, skipping payment in pay_and_access for %s", url)
+            headers["Authorization"] = f"L402 {challenge.macaroon}:{cached_preimage}"
+            retry_response = await client.request(method, url, headers=headers, **kwargs)
+            return retry_response
 
         try:
             preimage = await pay_invoice_callback(challenge.invoice)

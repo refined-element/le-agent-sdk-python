@@ -1,10 +1,14 @@
 """Tests for L402 client — challenge parsing, MPP support, and HTTP flow."""
 
 import pytest
+import httpx
+from unittest.mock import AsyncMock, patch
 
 from le_agent_sdk.l402.client import (
     L402Challenge,
     L402Client,
+    L402ProducerClient,
+    L402VerifyResponse,
     MppChallenge,
     parse_l402_challenge,
     parse_mpp_challenge,
@@ -172,7 +176,7 @@ class TestParsePaymentChallenge:
 
     def test_empty_header_raises(self):
         headers = {"WWW-Authenticate": ""}
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="Empty WWW-Authenticate header"):
             parse_payment_challenge(headers)
 
     def test_l402_with_both_present(self):
@@ -186,3 +190,109 @@ class TestParsePaymentChallenge:
         result = parse_payment_challenge(headers)
         assert isinstance(result, L402Challenge)
         assert result.macaroon == "mac1"
+
+
+class TestL402ProducerClientVerifyPayment:
+    """Tests for L402ProducerClient.verify_payment() covering both L402 and MPP flows."""
+
+    @pytest.mark.asyncio
+    async def test_verify_with_macaroon_sends_both_fields(self):
+        """When macaroon is provided, payload should include both macaroon and preimage."""
+        mock_response = httpx.Response(
+            200,
+            json={"valid": True, "resource": "/api/data"},
+            request=httpx.Request("POST", "https://api.lightningenable.com/api/l402/challenges/verify"),
+        )
+        with patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_response) as mock_post:
+            async with L402ProducerClient(le_api_key="test-key") as client:
+                result = await client.verify_payment("mac123", preimage="aa" * 32)
+
+            assert result.success is True
+            assert result.valid is True
+            assert result.resource == "/api/data"
+            call_kwargs = mock_post.call_args
+            payload = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
+            assert payload["macaroon"] == "mac123"
+            assert payload["preimage"] == "aa" * 32
+
+    @pytest.mark.asyncio
+    async def test_verify_without_macaroon_sends_preimage_only(self):
+        """MPP flow: when macaroon is omitted, payload should only contain preimage."""
+        mock_response = httpx.Response(
+            200,
+            json={"valid": True, "resource": "/api/mpp-data"},
+            request=httpx.Request("POST", "https://api.lightningenable.com/api/l402/challenges/verify"),
+        )
+        with patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_response) as mock_post:
+            async with L402ProducerClient(le_api_key="test-key") as client:
+                result = await client.verify_payment(preimage="bb" * 32)
+
+            assert result.success is True
+            assert result.valid is True
+            assert result.resource == "/api/mpp-data"
+            call_kwargs = mock_post.call_args
+            payload = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
+            assert "macaroon" not in payload
+            assert payload["preimage"] == "bb" * 32
+
+    @pytest.mark.asyncio
+    async def test_verify_without_macaroon_none_explicit(self):
+        """Explicitly passing macaroon=None should omit it from payload."""
+        mock_response = httpx.Response(
+            200,
+            json={"valid": False},
+            request=httpx.Request("POST", "https://api.lightningenable.com/api/l402/challenges/verify"),
+        )
+        with patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_response) as mock_post:
+            async with L402ProducerClient(le_api_key="test-key") as client:
+                result = await client.verify_payment(None, preimage="cc" * 32)
+
+            call_kwargs = mock_post.call_args
+            payload = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
+            assert "macaroon" not in payload
+
+    @pytest.mark.asyncio
+    async def test_verify_missing_preimage_raises_type_error(self):
+        """Calling verify_payment() without preimage keyword arg should raise TypeError."""
+        async with L402ProducerClient(le_api_key="test-key") as client:
+            with pytest.raises(TypeError):
+                await client.verify_payment("mac123")
+
+    @pytest.mark.asyncio
+    async def test_verify_no_args_raises_type_error(self):
+        """Calling verify_payment() with no arguments should raise TypeError."""
+        async with L402ProducerClient(le_api_key="test-key") as client:
+            with pytest.raises(TypeError):
+                await client.verify_payment()
+
+    @pytest.mark.asyncio
+    async def test_verify_api_error_returns_failure(self):
+        """Non-200 response should return a failure result."""
+        mock_response = httpx.Response(
+            401,
+            json={"error": "Invalid API key"},
+            request=httpx.Request("POST", "https://api.lightningenable.com/api/l402/challenges/verify"),
+        )
+        with patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_response):
+            async with L402ProducerClient(le_api_key="bad-key") as client:
+                result = await client.verify_payment(preimage="dd" * 32)
+
+            assert result.success is False
+            assert "Invalid API key" in result.error
+
+    @pytest.mark.asyncio
+    async def test_verify_strips_whitespace(self):
+        """Macaroon and preimage values should be stripped of whitespace."""
+        mock_response = httpx.Response(
+            200,
+            json={"valid": True},
+            request=httpx.Request("POST", "https://api.lightningenable.com/api/l402/challenges/verify"),
+        )
+        with patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_response) as mock_post:
+            async with L402ProducerClient(le_api_key="test-key") as client:
+                result = await client.verify_payment("  mac123  ", preimage="  " + "ee" * 32 + "  ")
+
+            call_kwargs = mock_post.call_args
+            payload = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
+            assert payload["macaroon"] == "mac123"
+            assert payload["preimage"] == "ee" * 32

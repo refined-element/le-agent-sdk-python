@@ -156,9 +156,11 @@ def parse_payment_challenge(
         ValueError: If no valid L402 or MPP challenge is found.
     """
     lower_headers = {k.lower(): v for k, v in headers.items()}
-    www_auth = lower_headers.get("www-authenticate", "")
-    if not www_auth:
+    if "www-authenticate" not in lower_headers:
         raise ValueError("No WWW-Authenticate header found")
+    www_auth = lower_headers["www-authenticate"]
+    if not www_auth:
+        raise ValueError("Empty WWW-Authenticate header")
 
     # Try L402 first (preferred)
     l402 = parse_l402_challenge(headers)
@@ -406,7 +408,18 @@ class L402Client:
         except ValueError:
             return response
 
-        preimage = await pay_invoice_callback(challenge.invoice)
+        try:
+            preimage = await pay_invoice_callback(challenge.invoice)
+        except Exception as exc:
+            logger.error(
+                "Error in pay_invoice_callback during pay_and_access for URL %r: %s",
+                url,
+                exc,
+                exc_info=True,
+            )
+            raise RuntimeError(
+                "Payment callback failed during pay_and_access; see logs for details"
+            ) from exc
 
         # Validate preimage format before constructing credentials
         if not self._validate_preimage(preimage):
@@ -566,7 +579,8 @@ class L402ProducerClient:
     async def verify_payment(
         self,
         macaroon: Optional[str] = None,
-        preimage: str = "",
+        *,
+        preimage: str,
     ) -> L402VerifyResponse:
         """Verify an L402 or MPP token to confirm payment.
 

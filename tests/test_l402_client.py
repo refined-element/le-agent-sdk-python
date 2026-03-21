@@ -1,8 +1,15 @@
-"""Tests for L402 client — challenge parsing and HTTP flow."""
+"""Tests for L402 client — challenge parsing, MPP support, and HTTP flow."""
 
 import pytest
 
-from le_agent_sdk.l402.client import L402Challenge, L402Client, parse_l402_challenge
+from le_agent_sdk.l402.client import (
+    L402Challenge,
+    L402Client,
+    MppChallenge,
+    parse_l402_challenge,
+    parse_mpp_challenge,
+    parse_payment_challenge,
+)
 
 
 class TestParseL402Challenge:
@@ -74,3 +81,86 @@ class TestL402Client:
         client = L402Client()
         await client.close()
         await client.close()  # Should not raise
+
+
+class TestMppChallengeParsing:
+    def test_parse_valid_mpp_header(self):
+        header = 'Payment realm="api.example.com", method="lightning", invoice="lnbc100n1pjtest", amount="100", currency="sat"'
+        result = parse_mpp_challenge(header)
+        assert isinstance(result, MppChallenge)
+        assert result.invoice == "lnbc100n1pjtest"
+        assert result.amount == "100"
+        assert result.realm == "api.example.com"
+
+    def test_parse_non_lightning_raises(self):
+        with pytest.raises(ValueError):
+            parse_mpp_challenge('Payment method="stripe", invoice="lnbc100n1pjtest"')
+
+    def test_parse_missing_invoice_raises(self):
+        with pytest.raises(ValueError):
+            parse_mpp_challenge('Payment method="lightning", amount="100"')
+
+    def test_parse_minimal_header(self):
+        result = parse_mpp_challenge(
+            'Payment method="lightning", invoice="lnbc100n1pjtest"'
+        )
+        assert result.invoice == "lnbc100n1pjtest"
+        assert result.amount is None
+        assert result.realm is None
+
+    def test_parse_case_insensitive(self):
+        header = 'PAYMENT METHOD="LIGHTNING", INVOICE="lnbc100n1pjtest", AMOUNT="50"'
+        result = parse_mpp_challenge(header)
+        assert result.invoice == "lnbc100n1pjtest"
+        assert result.amount == "50"
+
+    def test_mpp_challenge_frozen(self):
+        c = MppChallenge(invoice="inv1", amount="100", realm="example.com")
+        with pytest.raises(AttributeError):
+            c.invoice = "changed"
+
+
+class TestParsePaymentChallenge:
+    def test_l402_preferred(self):
+        headers = {
+            "WWW-Authenticate": 'L402 macaroon="abc", invoice="lnbc100n1pjtest"'
+        }
+        result = parse_payment_challenge(headers)
+        assert isinstance(result, L402Challenge)
+        assert result.macaroon == "abc"
+        assert result.invoice == "lnbc100n1pjtest"
+
+    def test_mpp_fallback(self):
+        headers = {
+            "WWW-Authenticate": 'Payment method="lightning", invoice="lnbc100n1pjtest"'
+        }
+        result = parse_payment_challenge(headers)
+        assert isinstance(result, MppChallenge)
+        assert result.invoice == "lnbc100n1pjtest"
+
+    def test_invalid_raises(self):
+        headers = {"WWW-Authenticate": "Bearer token123"}
+        with pytest.raises(ValueError):
+            parse_payment_challenge(headers)
+
+    def test_no_header_raises(self):
+        headers = {"Content-Type": "application/json"}
+        with pytest.raises(ValueError):
+            parse_payment_challenge(headers)
+
+    def test_empty_header_raises(self):
+        headers = {"WWW-Authenticate": ""}
+        with pytest.raises(ValueError):
+            parse_payment_challenge(headers)
+
+    def test_l402_with_both_present(self):
+        """When both L402 and MPP headers exist (combined), L402 is preferred."""
+        headers = {
+            "WWW-Authenticate": (
+                'L402 macaroon="mac1", invoice="lnbc100n1pjl402" '
+                'Payment method="lightning", invoice="lnbc100n1pjmpp"'
+            )
+        }
+        result = parse_payment_challenge(headers)
+        assert isinstance(result, L402Challenge)
+        assert result.macaroon == "mac1"

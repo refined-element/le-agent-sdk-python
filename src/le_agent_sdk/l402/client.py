@@ -35,6 +35,15 @@ class L402Challenge:
         return f"L402 {self.macaroon}"
 
 
+@dataclass(frozen=True)
+class MppChallenge:
+    """MPP challenge from Payment WWW-Authenticate header."""
+
+    invoice: str
+    amount: Optional[str] = None
+    realm: Optional[str] = None
+
+
 # Pattern for parsing L402/LSAT challenges
 _CHALLENGE_RE = re.compile(
     r'(?:L402|LSAT)\s+'
@@ -42,6 +51,14 @@ _CHALLENGE_RE = re.compile(
     r'invoice="?(?P<invoice>[^",\s]+)"?',
     re.IGNORECASE,
 )
+
+# Patterns for parsing MPP (Machine Payments Protocol) challenges
+_MPP_CHALLENGE_RE = re.compile(
+    r'Payment\s+.*?method="lightning".*?invoice="(?P<invoice>[^"]+)"',
+    re.IGNORECASE,
+)
+_MPP_AMOUNT_RE = re.compile(r'amount="(?P<amount>[^"]+)"', re.IGNORECASE)
+_MPP_REALM_RE = re.compile(r'realm="(?P<realm>[^"]+)"', re.IGNORECASE)
 
 
 def parse_l402_challenge(headers: dict[str, str]) -> Optional[L402Challenge]:
@@ -66,6 +83,68 @@ def parse_l402_challenge(headers: dict[str, str]) -> Optional[L402Challenge]:
         macaroon=match.group("macaroon").strip(),
         invoice=match.group("invoice").strip(),
     )
+
+
+def parse_mpp_challenge(header: str) -> MppChallenge:
+    """Parse a Payment (MPP) challenge from a WWW-Authenticate header value.
+
+    Args:
+        header: The WWW-Authenticate header value string.
+
+    Returns:
+        Parsed MppChallenge.
+
+    Raises:
+        ValueError: If the header is not a valid MPP challenge.
+    """
+    match = _MPP_CHALLENGE_RE.search(header)
+    if not match:
+        raise ValueError(f"Invalid MPP challenge: {header[:80]}")
+
+    invoice = match.group("invoice")
+    amount_match = _MPP_AMOUNT_RE.search(header)
+    realm_match = _MPP_REALM_RE.search(header)
+
+    return MppChallenge(
+        invoice=invoice,
+        amount=amount_match.group("amount") if amount_match else None,
+        realm=realm_match.group("realm") if realm_match else None,
+    )
+
+
+def parse_payment_challenge(
+    headers: dict[str, str],
+) -> L402Challenge | MppChallenge:
+    """Parse WWW-Authenticate headers, trying L402 first then MPP.
+
+    Prefers L402 when available; falls back to MPP (Machine Payments Protocol).
+
+    Args:
+        headers: HTTP response headers dict.
+
+    Returns:
+        Parsed L402Challenge or MppChallenge.
+
+    Raises:
+        ValueError: If no valid L402 or MPP challenge is found.
+    """
+    lower_headers = {k.lower(): v for k, v in headers.items()}
+    www_auth = lower_headers.get("www-authenticate", "")
+    if not www_auth:
+        raise ValueError("No WWW-Authenticate header found")
+
+    # Try L402 first (preferred)
+    l402 = parse_l402_challenge(headers)
+    if l402 is not None:
+        return l402
+
+    # Try MPP fallback
+    try:
+        return parse_mpp_challenge(www_auth)
+    except ValueError:
+        pass
+
+    raise ValueError(f"No valid L402 or MPP challenge: {www_auth[:80]}")
 
 
 class L402Client:
@@ -181,8 +260,11 @@ class L402Client:
         if response.status_code != 402:
             return response
 
-        challenge = parse_l402_challenge(dict(response.headers))
-        if challenge is None:
+        # Try L402 first, then MPP fallback
+        resp_headers = dict(response.headers)
+        try:
+            challenge = parse_payment_challenge(resp_headers)
+        except ValueError:
             return response
 
         if self._pay_callback is None:
@@ -219,13 +301,21 @@ class L402Client:
                 f"got length {len(preimage) if isinstance(preimage, str) else 'N/A'}"
             )
 
-        self._cache[challenge.macaroon] = preimage
-        logger.info(
-            "L402 payment succeeded. Preimage: %s (save this for recovery)", preimage
-        )
+        # Build the correct Authorization header based on challenge type
+        if isinstance(challenge, MppChallenge):
+            auth_header = f'Payment method="lightning", preimage="{preimage}"'
+            logger.info(
+                "MPP payment succeeded. Preimage: %s (save this for recovery)", preimage
+            )
+        else:
+            self._cache[challenge.macaroon] = preimage
+            auth_header = f"L402 {challenge.macaroon}:{preimage}"
+            logger.info(
+                "L402 payment succeeded. Preimage: %s (save this for recovery)", preimage
+            )
 
-        # Retry the request with L402 credentials, with retry+backoff
-        headers["Authorization"] = f"L402 {challenge.macaroon}:{preimage}"
+        # Retry the request with credentials, with retry+backoff
+        headers["Authorization"] = auth_header
         max_retries = 3
         last_exc: Optional[Exception] = None
 
@@ -282,14 +372,22 @@ class L402Client:
         if response.status_code != 402:
             return response
 
-        challenge = parse_l402_challenge(dict(response.headers))
-        if challenge is None:
+        # Try L402 first, then MPP fallback
+        resp_headers = dict(response.headers)
+        try:
+            challenge = parse_payment_challenge(resp_headers)
+        except ValueError:
             return response
 
         preimage = await pay_invoice_callback(challenge.invoice)
-        self._cache[challenge.macaroon] = preimage
 
-        headers["Authorization"] = f"L402 {challenge.macaroon}:{preimage}"
+        # Build the correct Authorization header based on challenge type
+        if isinstance(challenge, MppChallenge):
+            headers["Authorization"] = f'Payment method="lightning", preimage="{preimage}"'
+        else:
+            self._cache[challenge.macaroon] = preimage
+            headers["Authorization"] = f"L402 {challenge.macaroon}:{preimage}"
+
         retry_response = await client.request(method, url, headers=headers, **kwargs)
         return retry_response
 
@@ -427,27 +525,35 @@ class L402ProducerClient:
 
     async def verify_payment(
         self,
-        macaroon: str,
         preimage: str,
+        macaroon: Optional[str] = None,
     ) -> L402VerifyResponse:
-        """Verify an L402 token (macaroon + preimage) to confirm payment.
+        """Verify an L402 or MPP token to confirm payment.
 
-        The provider calls this after receiving an L402 token from the requester
+        For L402 verification, provide both macaroon and preimage.
+        For MPP verification, only the preimage is required (macaroon is None).
+
+        The provider calls this after receiving a token from the requester
         to validate that the invoice has been paid before delivering the service.
 
         Args:
-            macaroon: Base64-encoded macaroon from the L402 token.
             preimage: Hex-encoded preimage (proof of payment).
+            macaroon: Base64-encoded macaroon from the L402 token. Optional for
+                MPP payments where only a preimage is provided.
 
         Returns:
             L402VerifyResponse indicating whether the payment is valid.
         """
         client = self._ensure_client()
 
+        payload: dict[str, str] = {"preimage": preimage.strip()}
+        if macaroon:
+            payload["macaroon"] = macaroon.strip()
+
         try:
             response = await client.post(
                 f"{self._base_url}/api/l402/challenges/verify",
-                json={"macaroon": macaroon.strip(), "preimage": preimage.strip()},
+                json=payload,
             )
 
             if response.status_code != 200:

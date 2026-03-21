@@ -117,7 +117,7 @@ class TestL402ClientAccessFlow:
             pay_callback.assert_awaited_once_with("lnbc100n1pjtest")
             # Verify the retry request used the correct L402 Authorization header
             retry_call = mock_request.call_args_list[1]
-            retry_headers = retry_call.kwargs.get("headers") or retry_call[1].get("headers", {})
+            retry_headers = retry_call.kwargs.get("headers", {})
             assert retry_headers["Authorization"] == f"L402 mac_test:{fake_preimage}"
 
     @pytest.mark.asyncio
@@ -148,7 +148,7 @@ class TestL402ClientAccessFlow:
             pay_callback.assert_awaited_once_with("lnbc200n1pjmpptest")
             # Verify the retry request used the correct Payment Authorization header
             retry_call = mock_request.call_args_list[1]
-            retry_headers = retry_call.kwargs.get("headers") or retry_call[1].get("headers", {})
+            retry_headers = retry_call.kwargs.get("headers", {})
             assert retry_headers["Authorization"] == f'Payment method="lightning", preimage="{fake_preimage}"'
 
     @pytest.mark.asyncio
@@ -198,7 +198,7 @@ class TestL402ClientPayAndAccessFlow:
             assert result.status_code == 200
             pay_callback.assert_awaited_once_with("lnbc300n1pjpaatest")
             retry_call = mock_request.call_args_list[1]
-            retry_headers = retry_call.kwargs.get("headers") or retry_call[1].get("headers", {})
+            retry_headers = retry_call.kwargs.get("headers", {})
             assert retry_headers["Authorization"] == f"L402 mac_paa:{fake_preimage}"
 
     @pytest.mark.asyncio
@@ -229,7 +229,7 @@ class TestL402ClientPayAndAccessFlow:
             assert result.status_code == 200
             pay_callback.assert_awaited_once_with("lnbc400n1pjmpppaa")
             retry_call = mock_request.call_args_list[1]
-            retry_headers = retry_call.kwargs.get("headers") or retry_call[1].get("headers", {})
+            retry_headers = retry_call.kwargs.get("headers", {})
             assert retry_headers["Authorization"] == f'Payment method="lightning", preimage="{fake_preimage}"'
 
     @pytest.mark.asyncio
@@ -434,7 +434,7 @@ class TestL402ProducerClientVerifyPayment:
             assert result.valid is True
             assert result.resource == "/api/data"
             call_kwargs = mock_post.call_args
-            payload = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
+            payload = call_kwargs.kwargs["json"]
             assert payload["macaroon"] == "mac123"
             assert payload["preimage"] == "aa" * 32
 
@@ -454,7 +454,7 @@ class TestL402ProducerClientVerifyPayment:
             assert result.valid is True
             assert result.resource == "/api/mpp-data"
             call_kwargs = mock_post.call_args
-            payload = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
+            payload = call_kwargs.kwargs["json"]
             assert "macaroon" not in payload
             assert payload["preimage"] == "bb" * 32
 
@@ -471,7 +471,7 @@ class TestL402ProducerClientVerifyPayment:
                 result = await client.verify_payment(None, preimage="cc" * 32)
 
             call_kwargs = mock_post.call_args
-            payload = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
+            payload = call_kwargs.kwargs["json"]
             assert "macaroon" not in payload
 
     @pytest.mark.asyncio
@@ -487,6 +487,20 @@ class TestL402ProducerClientVerifyPayment:
         async with L402ProducerClient(le_api_key="test-key") as client:
             with pytest.raises(ValueError, match="preimage is required"):
                 await client.verify_payment()
+
+    @pytest.mark.asyncio
+    async def test_verify_empty_preimage_raises_value_error(self):
+        """Passing an empty string as preimage should raise ValueError."""
+        async with L402ProducerClient(le_api_key="test-key") as client:
+            with pytest.raises(ValueError, match="preimage is required"):
+                await client.verify_payment("mac123", preimage="")
+
+    @pytest.mark.asyncio
+    async def test_verify_whitespace_preimage_raises_value_error(self):
+        """Passing whitespace-only preimage should raise ValueError."""
+        async with L402ProducerClient(le_api_key="test-key") as client:
+            with pytest.raises(ValueError, match="preimage is required"):
+                await client.verify_payment("mac123", preimage="   ")
 
     @pytest.mark.asyncio
     async def test_verify_empty_macaroon_raises_value_error(self):
@@ -517,7 +531,7 @@ class TestL402ProducerClientVerifyPayment:
             assert result.success is True
             assert result.valid is True
             call_kwargs = mock_post.call_args
-            payload = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
+            payload = call_kwargs.kwargs["json"]
             assert payload["macaroon"] == "mac123"
             assert payload["preimage"] == "aa" * 32
 
@@ -549,6 +563,6 @@ class TestL402ProducerClientVerifyPayment:
                 result = await client.verify_payment("  mac123  ", preimage="  " + "ee" * 32 + "  ")
 
             call_kwargs = mock_post.call_args
-            payload = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
+            payload = call_kwargs.kwargs["json"]
             assert payload["macaroon"] == "mac123"
             assert payload["preimage"] == "ee" * 32

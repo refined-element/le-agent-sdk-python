@@ -379,12 +379,8 @@ class L402Client:
         # All retries exhausted — log preimage prefix for recovery identification
         logger.error(
             "All %d authenticated retries failed after payment. "
-            "Preimage prefix for recovery: %.8s... (enable DEBUG logging for full value)",
+            "Preimage prefix for recovery: %.8s... (full value never logged for security)",
             max_retries, preimage,
-        )
-        logger.debug(
-            "Preimage prefix for manual recovery (full value never logged for security): %.8s...",
-            preimage,
         )
         raise RuntimeError(
             f"Payment succeeded (preimage prefix: {preimage[:8]}...) but all {max_retries} "
@@ -620,9 +616,9 @@ class L402ProducerClient:
             ValueError: If preimage is not provided, or if macaroon is provided
                 but empty/whitespace.
         """
-        if preimage is None:
+        if not preimage or not isinstance(preimage, str) or not preimage.strip():
             raise ValueError(
-                "preimage is required; pass a hex-encoded preimage string"
+                "preimage is required; pass a non-empty hex-encoded preimage string"
             )
 
         client = self._ensure_client()

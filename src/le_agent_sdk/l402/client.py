@@ -47,8 +47,8 @@ class MppChallenge:
 # Pattern for parsing L402/LSAT challenges
 _CHALLENGE_RE = re.compile(
     r'(?:L402|LSAT)\s+'
-    r'macaroon="?(?P<macaroon>[^",\s]+)"?\s*,\s*'
-    r'invoice="?(?P<invoice>[^",\s]+)"?',
+    r'macaroon\s*=\s*"?(?P<macaroon>[^",\s]+)"?\s*,\s*'
+    r'invoice\s*=\s*"?(?P<invoice>[^",\s]+)"?',
     re.IGNORECASE,
 )
 
@@ -64,19 +64,19 @@ _AUTH_SCHEME_SPLIT = re.compile(
 # Also supports both quoted and unquoted (bare token) auth-param values
 # per HTTP auth header grammar.
 _MPP_INVOICE_RE = re.compile(
-    r'(?:^|[\s,])invoice="?(?P<invoice>[^",\s]+)"?',
+    r'(?:^|[\s,])invoice\s*=\s*"?(?P<invoice>[^",\s]+)"?',
     re.IGNORECASE,
 )
 _MPP_METHOD_RE = re.compile(
-    r'(?:^|[\s,])method="?lightning"?(?=$|[\s,])',
+    r'(?:^|[\s,])method\s*=\s*"?lightning"?(?=$|[\s,])',
     re.IGNORECASE,
 )
 _MPP_AMOUNT_RE = re.compile(
-    r'(?:^|[\s,])amount="?(?P<amount>[^",\s]+)"?',
+    r'(?:^|[\s,])amount\s*=\s*"?(?P<amount>[^",\s]+)"?',
     re.IGNORECASE,
 )
 _MPP_REALM_RE = re.compile(
-    r'(?:^|[\s,])realm="?(?P<realm>[^",\s]+)"?',
+    r'(?:^|[\s,])realm\s*=\s*"?(?P<realm>[^",\s]+)"?',
     re.IGNORECASE,
 )
 
@@ -383,7 +383,8 @@ class L402Client:
             max_retries, preimage,
         )
         logger.debug(
-            "Full preimage for manual recovery: %s", preimage,
+            "Preimage prefix for manual recovery (full value never logged for security): %.8s...",
+            preimage,
         )
         raise RuntimeError(
             f"Payment succeeded (preimage prefix: {preimage[:8]}...) but all {max_retries} "

@@ -68,7 +68,7 @@ _MPP_INVOICE_RE = re.compile(
     re.IGNORECASE,
 )
 _MPP_METHOD_RE = re.compile(
-    r'(?:^|[\s,])method="?lightning"?',
+    r'(?:^|[\s,])method="?lightning"?(?=$|[\s,])',
     re.IGNORECASE,
 )
 _MPP_AMOUNT_RE = re.compile(

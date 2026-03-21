@@ -289,6 +289,18 @@ class TestMppRegexBoundary:
         with pytest.raises(ValueError):
             parse_mpp_challenge(header)
 
+    def test_reject_lightning_suffix_in_method(self):
+        """method='lightning2' or method='lightningXYZ' must not be accepted."""
+        header = 'Payment method="lightning2", invoice="lnbc100n1pjtest"'
+        with pytest.raises(ValueError):
+            parse_mpp_challenge(header)
+
+    def test_reject_unquoted_lightning_suffix(self):
+        """Bare token method=lightningXYZ must not be accepted."""
+        header = "Payment method=lightningXYZ, invoice=lnbc100n1pjtest"
+        with pytest.raises(ValueError):
+            parse_mpp_challenge(header)
+
 
 class TestMppChallengeParsing:
     def test_parse_valid_mpp_header(self):

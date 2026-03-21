@@ -58,11 +58,24 @@ _CHALLENGE_RE = re.compile(
 _AUTH_SCHEME_SPLIT = re.compile(
     r'(?:^|,\s*)(?=[A-Za-z][A-Za-z0-9!#$&\-^_`|~]*\s)',
 )
-# Match invoice inside a Payment challenge's parameter list
-_MPP_INVOICE_RE = re.compile(r'invoice="(?P<invoice>[^"]+)"', re.IGNORECASE)
-_MPP_METHOD_RE = re.compile(r'method="lightning"', re.IGNORECASE)
-_MPP_AMOUNT_RE = re.compile(r'amount="(?P<amount>[^"]+)"', re.IGNORECASE)
-_MPP_REALM_RE = re.compile(r'realm="(?P<realm>[^"]+)"', re.IGNORECASE)
+# Match parameters inside a Payment challenge's parameter list, ensuring we
+# only match full parameter names (not substrings of longer names).
+_MPP_INVOICE_RE = re.compile(
+    r'(?<![A-Za-z0-9_-])invoice="(?P<invoice>[^"]+)"',
+    re.IGNORECASE,
+)
+_MPP_METHOD_RE = re.compile(
+    r'(?<![A-Za-z0-9_-])method="lightning"',
+    re.IGNORECASE,
+)
+_MPP_AMOUNT_RE = re.compile(
+    r'(?<![A-Za-z0-9_-])amount="(?P<amount>[^"]+)"',
+    re.IGNORECASE,
+)
+_MPP_REALM_RE = re.compile(
+    r'(?<![A-Za-z0-9_-])realm="(?P<realm>[^"]+)"',
+    re.IGNORECASE,
+)
 
 
 def parse_l402_challenge(headers: dict[str, str]) -> Optional[L402Challenge]:
@@ -579,8 +592,7 @@ class L402ProducerClient:
     async def verify_payment(
         self,
         macaroon: Optional[str] = None,
-        *,
-        preimage: str,
+        preimage: Optional[str] = None,
     ) -> L402VerifyResponse:
         """Verify an L402 or MPP token to confirm payment.
 
@@ -592,17 +604,36 @@ class L402ProducerClient:
 
         Args:
             macaroon: Base64-encoded macaroon from the L402 token. Optional for
-                MPP payments where only a preimage is provided.
-            preimage: Hex-encoded preimage (proof of payment).
+                MPP payments where only a preimage is provided. Pass None to use
+                MPP verification without a macaroon.
+            preimage: Hex-encoded preimage (proof of payment). Required.
 
         Returns:
             L402VerifyResponse indicating whether the payment is valid.
+
+        Raises:
+            ValueError: If preimage is not provided, or if macaroon is provided
+                but empty/whitespace.
         """
+        if preimage is None:
+            raise ValueError(
+                "preimage is required; pass a hex-encoded preimage string"
+            )
+
         client = self._ensure_client()
 
         payload: dict[str, str] = {"preimage": preimage.strip()}
-        if macaroon:
-            payload["macaroon"] = macaroon.strip()
+
+        # Distinguish MPP (macaroon is None) from an explicitly provided but
+        # empty/whitespace macaroon, which should be treated as an error.
+        if macaroon is not None:
+            macaroon_stripped = macaroon.strip()
+            if not macaroon_stripped:
+                raise ValueError(
+                    "macaroon must be a non-empty string when provided; "
+                    "use None to request MPP verification without a macaroon."
+                )
+            payload["macaroon"] = macaroon_stripped
 
         try:
             response = await client.post(

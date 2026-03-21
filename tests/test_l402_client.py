@@ -87,6 +87,210 @@ class TestL402Client:
         await client.close()  # Should not raise
 
 
+class TestL402ClientAccessFlow:
+    """Tests for the 402 -> pay -> retry flow in L402Client.access()."""
+
+    @pytest.mark.asyncio
+    async def test_access_l402_402_pay_retry(self):
+        """L402 challenge: 402 response, pay invoice, retry with L402 Authorization header."""
+        fake_preimage = "ab" * 32
+
+        # First call returns 402 with L402 challenge
+        response_402 = httpx.Response(
+            402,
+            headers={"WWW-Authenticate": 'L402 macaroon="mac_test", invoice="lnbc100n1pjtest"'},
+            request=httpx.Request("GET", "https://api.example.com/resource"),
+        )
+        # Second call returns 200 (after auth)
+        response_200 = httpx.Response(
+            200,
+            json={"data": "success"},
+            request=httpx.Request("GET", "https://api.example.com/resource"),
+        )
+
+        pay_callback = AsyncMock(return_value=fake_preimage)
+
+        with patch("httpx.AsyncClient.request", new_callable=AsyncMock, side_effect=[response_402, response_200]) as mock_request:
+            async with L402Client(pay_invoice_callback=pay_callback) as client:
+                result = await client.access("https://api.example.com/resource")
+
+            assert result.status_code == 200
+            pay_callback.assert_awaited_once_with("lnbc100n1pjtest")
+            # Verify the retry request used the correct L402 Authorization header
+            retry_call = mock_request.call_args_list[1]
+            retry_headers = retry_call.kwargs.get("headers") or retry_call[1].get("headers", {})
+            assert retry_headers["Authorization"] == f"L402 mac_test:{fake_preimage}"
+
+    @pytest.mark.asyncio
+    async def test_access_mpp_402_pay_retry(self):
+        """MPP challenge: 402 response, pay invoice, retry with Payment Authorization header."""
+        fake_preimage = "cd" * 32
+
+        # First call returns 402 with MPP challenge
+        response_402 = httpx.Response(
+            402,
+            headers={"WWW-Authenticate": 'Payment method="lightning", invoice="lnbc200n1pjmpptest"'},
+            request=httpx.Request("GET", "https://api.example.com/mpp-resource"),
+        )
+        # Second call returns 200 (after auth)
+        response_200 = httpx.Response(
+            200,
+            json={"data": "mpp-success"},
+            request=httpx.Request("GET", "https://api.example.com/mpp-resource"),
+        )
+
+        pay_callback = AsyncMock(return_value=fake_preimage)
+
+        with patch("httpx.AsyncClient.request", new_callable=AsyncMock, side_effect=[response_402, response_200]) as mock_request:
+            async with L402Client(pay_invoice_callback=pay_callback) as client:
+                result = await client.access("https://api.example.com/mpp-resource")
+
+            assert result.status_code == 200
+            pay_callback.assert_awaited_once_with("lnbc200n1pjmpptest")
+            # Verify the retry request used the correct Payment Authorization header
+            retry_call = mock_request.call_args_list[1]
+            retry_headers = retry_call.kwargs.get("headers") or retry_call[1].get("headers", {})
+            assert retry_headers["Authorization"] == f'Payment method="lightning", preimage="{fake_preimage}"'
+
+    @pytest.mark.asyncio
+    async def test_access_no_callback_returns_402(self):
+        """Without a pay callback, 402 responses are returned as-is."""
+        response_402 = httpx.Response(
+            402,
+            headers={"WWW-Authenticate": 'L402 macaroon="mac_test", invoice="lnbc100n1pjtest"'},
+            request=httpx.Request("GET", "https://api.example.com/resource"),
+        )
+
+        with patch("httpx.AsyncClient.request", new_callable=AsyncMock, return_value=response_402):
+            async with L402Client() as client:
+                result = await client.access("https://api.example.com/resource")
+
+            assert result.status_code == 402
+
+
+class TestL402ClientPayAndAccessFlow:
+    """Tests for the 402 -> pay -> retry flow in L402Client.pay_and_access()."""
+
+    @pytest.mark.asyncio
+    async def test_pay_and_access_l402_flow(self):
+        """L402: pay_and_access should pay invoice and retry with L402 Authorization."""
+        fake_preimage = "ef" * 32
+
+        response_402 = httpx.Response(
+            402,
+            headers={"WWW-Authenticate": 'L402 macaroon="mac_paa", invoice="lnbc300n1pjpaatest"'},
+            request=httpx.Request("GET", "https://api.example.com/l402-resource"),
+        )
+        response_200 = httpx.Response(
+            200,
+            json={"data": "l402-paid"},
+            request=httpx.Request("GET", "https://api.example.com/l402-resource"),
+        )
+
+        pay_callback = AsyncMock(return_value=fake_preimage)
+
+        with patch("httpx.AsyncClient.request", new_callable=AsyncMock, side_effect=[response_402, response_200]) as mock_request:
+            async with L402Client() as client:
+                result = await client.pay_and_access(
+                    "https://api.example.com/l402-resource",
+                    pay_invoice_callback=pay_callback,
+                )
+
+            assert result.status_code == 200
+            pay_callback.assert_awaited_once_with("lnbc300n1pjpaatest")
+            retry_call = mock_request.call_args_list[1]
+            retry_headers = retry_call.kwargs.get("headers") or retry_call[1].get("headers", {})
+            assert retry_headers["Authorization"] == f"L402 mac_paa:{fake_preimage}"
+
+    @pytest.mark.asyncio
+    async def test_pay_and_access_mpp_flow(self):
+        """MPP: pay_and_access should pay invoice and retry with Payment Authorization."""
+        fake_preimage = "01" * 32
+
+        response_402 = httpx.Response(
+            402,
+            headers={"WWW-Authenticate": 'Payment method="lightning", invoice="lnbc400n1pjmpppaa"'},
+            request=httpx.Request("GET", "https://api.example.com/mpp-resource"),
+        )
+        response_200 = httpx.Response(
+            200,
+            json={"data": "mpp-paid"},
+            request=httpx.Request("GET", "https://api.example.com/mpp-resource"),
+        )
+
+        pay_callback = AsyncMock(return_value=fake_preimage)
+
+        with patch("httpx.AsyncClient.request", new_callable=AsyncMock, side_effect=[response_402, response_200]) as mock_request:
+            async with L402Client() as client:
+                result = await client.pay_and_access(
+                    "https://api.example.com/mpp-resource",
+                    pay_invoice_callback=pay_callback,
+                )
+
+            assert result.status_code == 200
+            pay_callback.assert_awaited_once_with("lnbc400n1pjmpppaa")
+            retry_call = mock_request.call_args_list[1]
+            retry_headers = retry_call.kwargs.get("headers") or retry_call[1].get("headers", {})
+            assert retry_headers["Authorization"] == f'Payment method="lightning", preimage="{fake_preimage}"'
+
+    @pytest.mark.asyncio
+    async def test_pay_and_access_callback_failure_raises(self):
+        """Payment callback failure should raise RuntimeError with context."""
+        response_402 = httpx.Response(
+            402,
+            headers={"WWW-Authenticate": 'L402 macaroon="mac_fail", invoice="lnbc100n1pjfail"'},
+            request=httpx.Request("GET", "https://api.example.com/resource"),
+        )
+
+        pay_callback = AsyncMock(side_effect=ConnectionError("wallet offline"))
+
+        with patch("httpx.AsyncClient.request", new_callable=AsyncMock, return_value=response_402):
+            async with L402Client() as client:
+                with pytest.raises(RuntimeError, match="Payment callback failed"):
+                    await client.pay_and_access(
+                        "https://api.example.com/resource",
+                        pay_invoice_callback=pay_callback,
+                    )
+
+    @pytest.mark.asyncio
+    async def test_pay_and_access_non_402_returns_directly(self):
+        """Non-402 responses should be returned without attempting payment."""
+        response_200 = httpx.Response(
+            200,
+            json={"data": "free"},
+            request=httpx.Request("GET", "https://api.example.com/free"),
+        )
+
+        pay_callback = AsyncMock()
+
+        with patch("httpx.AsyncClient.request", new_callable=AsyncMock, return_value=response_200):
+            async with L402Client() as client:
+                result = await client.pay_and_access(
+                    "https://api.example.com/free",
+                    pay_invoice_callback=pay_callback,
+                )
+
+            assert result.status_code == 200
+            pay_callback.assert_not_awaited()
+
+
+class TestMppRegexBoundary:
+    """Tests for MPP regex parameter-boundary matching."""
+
+    def test_no_false_positive_on_substring_method(self):
+        """A parameter like some_method='lightning' should not be matched as method='lightning'."""
+        header = 'Payment some_method="lightning", invoice="lnbc100n1pjtest", method="lightning"'
+        result = parse_mpp_challenge(header)
+        # Should still parse correctly because real method="lightning" is present
+        assert result.invoice == "lnbc100n1pjtest"
+
+    def test_reject_only_prefixed_method(self):
+        """If only a prefixed 'method' exists (no real 'method'), it should fail."""
+        header = 'Payment xmethod="lightning", invoice="lnbc100n1pjtest"'
+        with pytest.raises(ValueError):
+            parse_mpp_challenge(header)
+
+
 class TestMppChallengeParsing:
     def test_parse_valid_mpp_header(self):
         header = 'Payment realm="api.example.com", method="lightning", invoice="lnbc100n1pjtest", amount="100", currency="sat"'
@@ -252,18 +456,51 @@ class TestL402ProducerClientVerifyPayment:
             assert "macaroon" not in payload
 
     @pytest.mark.asyncio
-    async def test_verify_missing_preimage_raises_type_error(self):
-        """Calling verify_payment() without preimage keyword arg should raise TypeError."""
+    async def test_verify_missing_preimage_raises_value_error(self):
+        """Calling verify_payment() without preimage should raise ValueError."""
         async with L402ProducerClient(le_api_key="test-key") as client:
-            with pytest.raises(TypeError):
+            with pytest.raises(ValueError, match="preimage is required"):
                 await client.verify_payment("mac123")
 
     @pytest.mark.asyncio
-    async def test_verify_no_args_raises_type_error(self):
-        """Calling verify_payment() with no arguments should raise TypeError."""
+    async def test_verify_no_args_raises_value_error(self):
+        """Calling verify_payment() with no arguments should raise ValueError."""
         async with L402ProducerClient(le_api_key="test-key") as client:
-            with pytest.raises(TypeError):
+            with pytest.raises(ValueError, match="preimage is required"):
                 await client.verify_payment()
+
+    @pytest.mark.asyncio
+    async def test_verify_empty_macaroon_raises_value_error(self):
+        """Passing an empty string as macaroon should raise ValueError, not silently switch to MPP."""
+        async with L402ProducerClient(le_api_key="test-key") as client:
+            with pytest.raises(ValueError, match="macaroon must be a non-empty string"):
+                await client.verify_payment("", preimage="aa" * 32)
+
+    @pytest.mark.asyncio
+    async def test_verify_whitespace_macaroon_raises_value_error(self):
+        """Passing whitespace-only macaroon should raise ValueError."""
+        async with L402ProducerClient(le_api_key="test-key") as client:
+            with pytest.raises(ValueError, match="macaroon must be a non-empty string"):
+                await client.verify_payment("   ", preimage="aa" * 32)
+
+    @pytest.mark.asyncio
+    async def test_verify_positional_backward_compat(self):
+        """Calling verify_payment(macaroon, preimage) positionally should still work."""
+        mock_response = httpx.Response(
+            200,
+            json={"valid": True, "resource": "/api/data"},
+            request=httpx.Request("POST", "https://api.lightningenable.com/api/l402/challenges/verify"),
+        )
+        with patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_response) as mock_post:
+            async with L402ProducerClient(le_api_key="test-key") as client:
+                result = await client.verify_payment("mac123", "aa" * 32)
+
+            assert result.success is True
+            assert result.valid is True
+            call_kwargs = mock_post.call_args
+            payload = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
+            assert payload["macaroon"] == "mac123"
+            assert payload["preimage"] == "aa" * 32
 
     @pytest.mark.asyncio
     async def test_verify_api_error_returns_failure(self):

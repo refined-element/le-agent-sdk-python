@@ -123,6 +123,10 @@ class AgentServiceAgreement:
             if len(p_tags) > 1:
                 agr.requester_pubkey = p_tags[1][1]
 
+        # Enforce invariant: payment_hash only valid when status is completed
+        if agr.status != "completed":
+            agr.payment_hash = None
+
         return agr
 
     def to_nostr_tags(self) -> list[list[str]]:

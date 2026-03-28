@@ -468,6 +468,26 @@ class TestAgentServiceAgreement:
         assert restored.status == "completed"
         assert restored.payment_hash == "d" * 64
 
+    def test_parse_drops_payment_hash_when_not_completed(self):
+        """payment_hash should be dropped when status is not completed (invariant)."""
+        event = {
+            "id": "inv_agr",
+            "pubkey": "inv_pub",
+            "created_at": 1700000008,
+            "kind": 38402,
+            "content": "",
+            "tags": [
+                ["d", "inv-test"],
+                ["status", "active"],
+                ["payment_hash", "e" * 64],
+                ["p", "provider_pub", "", "provider"],
+                ["p", "requester_pub", "", "requester"],
+            ],
+        }
+        agr = AgentServiceAgreement.from_nostr_event(event)
+        assert agr.status == "active"
+        assert agr.payment_hash is None
+
 
 # --- AgentAttestation ---
 

@@ -25,6 +25,10 @@ class AgentServiceAgreement:
     # L402 Producer API challenge fields (set after create_challenge)
     invoice: Optional[str] = None
     macaroon: Optional[str] = None
+    # Dual-purpose field:
+    #   1. L402 Producer API: populated by create_challenge() with the Lightning payment hash.
+    #   2. NIP-A5 event tag: emitted as a ["payment_hash", ...] tag on completed
+    #      agreements (kind 38402, status="completed") to provide on-chain proof of settlement.
     payment_hash: Optional[str] = None
     # Settlement mode: "proxy" (static L402 proxy) or "producer" (dynamic via Producer API)
     settlement_mode: str = "proxy"

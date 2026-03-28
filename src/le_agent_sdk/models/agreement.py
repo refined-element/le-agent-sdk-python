@@ -25,9 +25,15 @@ class AgentServiceAgreement:
     # L402 Producer API challenge fields (set after create_challenge)
     invoice: Optional[str] = None
     macaroon: Optional[str] = None
+    # Dual-purpose field:
+    #   1. L402 Producer API: populated by create_challenge() with the Lightning payment hash.
+    #   2. NIP-A5 event tag: emitted as a ["payment_hash", ...] tag on completed
+    #      agreements (kind 38402, status="completed") to provide proof of Lightning settlement.
     payment_hash: Optional[str] = None
     # Settlement mode: "proxy" (static L402 proxy) or "producer" (dynamic via Producer API)
     settlement_mode: str = "proxy"
+    # Agreement lifecycle status: proposed, active, completed, disputed, expired
+    status: str = "proposed"
     # Set by relay / event parsing
     event_id: str = ""
     pubkey: str = ""
@@ -72,6 +78,10 @@ class AgentServiceAgreement:
                     agr.expires_at = int(tag[1])
                 except (ValueError, TypeError):
                     agr.expires_at = None
+            elif key == "status" and len(tag) > 1:
+                agr.status = tag[1]
+            elif key == "payment_hash" and len(tag) > 1:
+                agr.payment_hash = tag[1]
 
         # Parse e-tags: prefer marker hints (e.g. ["e", "<id>", "", "request"])
         # Fall back to order-based parsing if markers not present
@@ -113,6 +123,10 @@ class AgentServiceAgreement:
             if len(p_tags) > 1:
                 agr.requester_pubkey = p_tags[1][1]
 
+        # Enforce invariant: payment_hash only valid when status is completed
+        if agr.status != "completed":
+            agr.payment_hash = None
+
         return agr
 
     def to_nostr_tags(self) -> list[list[str]]:
@@ -142,5 +156,11 @@ class AgentServiceAgreement:
 
         if self.expires_at is not None:
             tags.append(["expiration", str(self.expires_at)])
+
+        if self.status:
+            tags.append(["status", self.status])
+
+        if self.status == "completed" and self.payment_hash:
+            tags.append(["payment_hash", self.payment_hash])
 
         return tags

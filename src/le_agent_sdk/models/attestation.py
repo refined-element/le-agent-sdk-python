@@ -88,6 +88,7 @@ class AgentAttestation:
         # NIP-32 label namespace
         tags.append(["L", "nostr.agent.attestation"])
         tags.append(["l", "completed", "nostr.agent.attestation"])
+        tags.append(["l", "commerce.service_completion", "nostr.agent.attestation"])
 
         if self.proof:
             tags.append(["proof", self.proof])

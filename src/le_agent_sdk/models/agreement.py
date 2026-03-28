@@ -28,6 +28,8 @@ class AgentServiceAgreement:
     payment_hash: Optional[str] = None
     # Settlement mode: "proxy" (static L402 proxy) or "producer" (dynamic via Producer API)
     settlement_mode: str = "proxy"
+    # Agreement lifecycle status: proposed, active, completed, disputed, expired
+    status: str = "proposed"
     # Set by relay / event parsing
     event_id: str = ""
     pubkey: str = ""
@@ -72,6 +74,10 @@ class AgentServiceAgreement:
                     agr.expires_at = int(tag[1])
                 except (ValueError, TypeError):
                     agr.expires_at = None
+            elif key == "status" and len(tag) > 1:
+                agr.status = tag[1]
+            elif key == "payment_hash" and len(tag) > 1:
+                agr.payment_hash = tag[1]
 
         # Parse e-tags: prefer marker hints (e.g. ["e", "<id>", "", "request"])
         # Fall back to order-based parsing if markers not present
@@ -142,5 +148,11 @@ class AgentServiceAgreement:
 
         if self.expires_at is not None:
             tags.append(["expiration", str(self.expires_at)])
+
+        if self.status:
+            tags.append(["status", self.status])
+
+        if self.status == "completed" and self.payment_hash:
+            tags.append(["payment_hash", self.payment_hash])
 
         return tags

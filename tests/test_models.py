@@ -381,6 +381,93 @@ class TestAgentServiceAgreement:
         exp_tags = [t for t in tags if t[0] == "expiration"]
         assert len(exp_tags) == 0
 
+    def test_status_default(self):
+        agr = AgentServiceAgreement()
+        assert agr.status == "proposed"
+        tags = agr.to_nostr_tags()
+        assert ["status", "proposed"] in tags
+
+    def test_status_completed_with_payment_hash(self):
+        agr = AgentServiceAgreement(
+            request_event_id="r1",
+            capability_event_id="c1",
+            provider_pubkey="prov",
+            requester_pubkey="req",
+            agreed_price_sats=100,
+            status="completed",
+            payment_hash="a" * 64,
+        )
+        tags = agr.to_nostr_tags()
+        assert ["status", "completed"] in tags
+        assert ["payment_hash", "a" * 64] in tags
+
+    def test_status_proposed_no_payment_hash(self):
+        """payment_hash tag should only appear when status is completed."""
+        agr = AgentServiceAgreement(
+            agreed_price_sats=50,
+            status="proposed",
+            payment_hash="b" * 64,
+        )
+        tags = agr.to_nostr_tags()
+        assert ["status", "proposed"] in tags
+        ph_tags = [t for t in tags if t[0] == "payment_hash"]
+        assert len(ph_tags) == 0
+
+    def test_status_completed_no_payment_hash_value(self):
+        """No payment_hash tag when status is completed but hash is None."""
+        agr = AgentServiceAgreement(
+            agreed_price_sats=50,
+            status="completed",
+        )
+        tags = agr.to_nostr_tags()
+        assert ["status", "completed"] in tags
+        ph_tags = [t for t in tags if t[0] == "payment_hash"]
+        assert len(ph_tags) == 0
+
+    def test_parse_status_and_payment_hash(self):
+        event = {
+            "id": "agr_completed",
+            "pubkey": "prov_pub",
+            "created_at": 1700000006,
+            "kind": 38402,
+            "content": "",
+            "tags": [
+                ["e", "req1", "", "request"],
+                ["e", "cap1", "", "capability"],
+                ["p", "prov_pub", "", "provider"],
+                ["p", "req_pub", "", "requester"],
+                ["price", "200"],
+                ["status", "completed"],
+                ["payment_hash", "c" * 64],
+            ],
+        }
+        agr = AgentServiceAgreement.from_nostr_event(event)
+        assert agr.status == "completed"
+        assert agr.payment_hash == "c" * 64
+
+    def test_roundtrip_completed_with_payment_hash(self):
+        agr = AgentServiceAgreement(
+            request_event_id="req_rt2",
+            capability_event_id="cap_rt2",
+            provider_pubkey="prov_rt2",
+            requester_pubkey="req_pub_rt2",
+            agreed_price_sats=150,
+            status="completed",
+            payment_hash="d" * 64,
+        )
+        tags = agr.to_nostr_tags()
+        event = {
+            "id": "rt_agr2",
+            "pubkey": "rt_pub2",
+            "created_at": 1700000007,
+            "kind": 38402,
+            "content": "",
+            "tags": tags,
+        }
+        restored = AgentServiceAgreement.from_nostr_event(event)
+        assert restored.status == "completed"
+        assert restored.payment_hash == "d" * 64
+
 
 # --- AgentAttestation ---
 
@@ -400,6 +487,7 @@ class TestAgentAttestation:
                 ["rating", "5"],
                 ["L", "nostr.agent.attestation"],
                 ["l", "completed", "nostr.agent.attestation"],
+                ["l", "commerce.service_completion", "nostr.agent.attestation"],
                 ["proof", "abc123hash"],
             ],
             "sig": "sig_att",
@@ -435,6 +523,7 @@ class TestAgentAttestation:
         assert ["rating", "4"] in tags
         assert ["L", "nostr.agent.attestation"] in tags
         assert ["l", "completed", "nostr.agent.attestation"] in tags
+        assert ["l", "commerce.service_completion", "nostr.agent.attestation"] in tags
         assert ["proof", "proof_hash"] in tags
 
     def test_roundtrip(self):

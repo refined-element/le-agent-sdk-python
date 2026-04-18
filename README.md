@@ -2,7 +2,7 @@
 
 [![PyPI version](https://img.shields.io/pypi/v/le-agent-sdk.svg)](https://pypi.org/project/le-agent-sdk/)
 [![Tests](https://github.com/refined-element/le-agent-sdk-python/actions/workflows/test.yml/badge.svg)](https://github.com/refined-element/le-agent-sdk-python/actions/workflows/test.yml)
-[![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://pypi.org/project/le-agent-sdk/)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://pypi.org/project/le-agent-sdk/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 Python SDK for Lightning Enable Agent Service Agreements.

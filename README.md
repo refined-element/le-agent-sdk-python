@@ -1,8 +1,8 @@
 # le-agent-sdk
 
 [![PyPI version](https://img.shields.io/pypi/v/le-agent-sdk.svg)](https://pypi.org/project/le-agent-sdk/)
-[![Tests](https://github.com/ArcadeLabsInc/lightning-enable-agent-sdk-python/actions/workflows/test.yml/badge.svg)](https://github.com/ArcadeLabsInc/lightning-enable-agent-sdk-python/actions/workflows/test.yml)
-[![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://pypi.org/project/le-agent-sdk/)
+[![Tests](https://github.com/refined-element/le-agent-sdk-python/actions/workflows/test.yml/badge.svg)](https://github.com/refined-element/le-agent-sdk-python/actions/workflows/test.yml)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://pypi.org/project/le-agent-sdk/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 Python SDK for Lightning Enable Agent Service Agreements.
@@ -110,7 +110,7 @@ asyncio.run(main())
 
 | Class | Description |
 |-------|-------------|
-| `L402Client` | HTTP client with automatic L402 challenge-response handling. Wraps [l402-requests](https://github.com/ArcadeLabsInc/l402-requests). |
+| `L402Client` | HTTP client with automatic L402 challenge-response handling. Wraps [l402-requests](https://github.com/refined-element/l402-requests). |
 | `AgentPricing` | Pricing model (amount, unit, per-request/per-token). |
 
 ## Protocol

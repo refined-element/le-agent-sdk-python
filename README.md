@@ -1,5 +1,8 @@
 # le-agent-sdk
 
+[![Discord](https://img.shields.io/discord/1405389254892195951?label=community&logo=discord&color=5865F2)](https://discord.gg/rX7NxHY8vx)
+
+
 [![PyPI version](https://img.shields.io/pypi/v/le-agent-sdk.svg)](https://pypi.org/project/le-agent-sdk/)
 [![Tests](https://github.com/refined-element/le-agent-sdk-python/actions/workflows/test.yml/badge.svg)](https://github.com/refined-element/le-agent-sdk-python/actions/workflows/test.yml)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://pypi.org/project/le-agent-sdk/)

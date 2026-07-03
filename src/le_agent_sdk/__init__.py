@@ -1,4 +1,4 @@
-"""Lightning Enable Agent SDK — discover, negotiate, and settle Agent Service Agreements."""
+"""Lightning Enable Agent SDK — discover, request, and settle Agent Service Agreements."""
 
 from le_agent_sdk.models.capability import AgentCapability, AgentPricing
 from le_agent_sdk.models.request import AgentServiceRequest
@@ -24,4 +24,4 @@ __all__ = [
     "AgentManager",
 ]
 
-__version__ = "0.3.0"
+__version__ = "0.3.2"

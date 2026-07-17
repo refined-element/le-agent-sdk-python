@@ -7,6 +7,7 @@ sending requests, negotiating agreements, and settling via L402.
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any, AsyncIterator, Optional
 
 from le_agent_sdk.l402.client import L402Client, L402ProducerClient
@@ -14,9 +15,11 @@ from le_agent_sdk.models.agreement import AgentServiceAgreement
 from le_agent_sdk.models.attestation import AgentAttestation
 from le_agent_sdk.models.capability import AgentCapability
 from le_agent_sdk.models.request import AgentServiceRequest
-from le_agent_sdk.nostr.event import NostrEvent
+from le_agent_sdk.nostr.event import CryptoBackendUnavailableError, NostrEvent
 from le_agent_sdk.nostr.relay import RelayClient
 from le_agent_sdk.nostr.tags import TagParser
+
+logger = logging.getLogger(__name__)
 
 
 class AgentManager:
@@ -63,6 +66,39 @@ class AgentManager:
                 raise ValueError("No private key configured; cannot derive pubkey")
             self._pubkey = NostrEvent.pubkey_from_private_key(self.private_key)
         return self._pubkey
+
+    @staticmethod
+    def _is_event_authentic(event: dict[str, Any]) -> bool:
+        """Check a relay-supplied event's signature before trusting its contents.
+
+        Relay URLs are caller-configurable and results are merged across relays,
+        so without this a single malicious or compromised relay could inject
+        events attributed to any pubkey — forged capability ads, forged
+        attestations inflating an agent's reputation.
+
+        A verification failure drops only the offending event: one bad relay in
+        the pool must not be able to fail an otherwise good query. A RuntimeError
+        (crypto backend unavailable) is left to propagate — that is an environment
+        fault affecting every event, and silently returning zero results would
+        misrepresent it as "nothing found".
+        """
+        if NostrEvent.verify(event):
+            return True
+
+        logger.warning(
+            "Dropping Nostr event %.16s... (kind=%s) from pubkey %.16s...: "
+            "signature verification failed. The relay may be malicious or "
+            "misbehaving.",
+            event.get("id", "<no id>"),
+            event.get("kind", "<no kind>"),
+            event.get("pubkey", "<no pubkey>"),
+        )
+        return False
+
+    @classmethod
+    def _filter_authentic(cls, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Keep only events with a valid signature under their claimed pubkey."""
+        return [event for event in events if cls._is_event_authentic(event)]
 
     async def _publish_to_relays(self, event: dict[str, Any]) -> str:
         """Publish an event to all configured relays.
@@ -183,7 +219,10 @@ class AgentManager:
         )
 
         raw_events = await self._query_relays([nostr_filter], timeout=timeout)
-        return [AgentCapability.from_nostr_event(e) for e in raw_events]
+        return [
+            AgentCapability.from_nostr_event(e)
+            for e in self._filter_authentic(raw_events)
+        ]
 
     async def publish_capability(self, capability: AgentCapability) -> str:
         """Publish a capability advertisement to relays.
@@ -296,7 +335,14 @@ class AgentManager:
                             if event_id and event_id not in seen_ids:
                                 seen_ids.add(event_id)
                                 reconnect_attempts = 0  # Reset on successful message
+                                if not self._is_event_authentic(event_data):
+                                    continue
                                 yield AgentServiceRequest.from_nostr_event(event_data)
+                except CryptoBackendUnavailableError:
+                    # Environment fault, not a relay fault: reconnecting cannot
+                    # fix a missing crypto backend. Surface it immediately
+                    # instead of burning the reconnect budget on it.
+                    raise
                 except Exception:
                     reconnect_attempts += 1
                     if reconnect_attempts > max_reconnect_attempts:
@@ -521,7 +567,10 @@ class AgentManager:
         )
 
         raw_events = await self._query_relays([nostr_filter], timeout=timeout)
-        return [AgentAttestation.from_nostr_event(e) for e in raw_events]
+        return [
+            AgentAttestation.from_nostr_event(e)
+            for e in self._filter_authentic(raw_events)
+        ]
 
     async def get_reputation_score(
         self,

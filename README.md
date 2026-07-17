@@ -18,6 +18,23 @@ Discover, request, and settle agent-to-agent services over Nostr with L402 Light
 pip install le-agent-sdk
 ```
 
+> **0.4.0 fixes signature verification silently passing when the crypto backend is
+> unavailable, plus two payment-budget bypasses. Upgrading is recommended** — see
+> the [changelog](CHANGELOG.md).
+
+> **0.4.0 replaces the `secp256k1` dependency with [`coincurve`](https://pypi.org/project/coincurve/).**
+> `secp256k1` required a native build and could not be installed on Windows at all;
+> `coincurve` ships prebuilt wheels, so installation no longer needs a C toolchain.
+> The signature wire format is unchanged — events signed by 0.3.x still verify,
+> which is covered by cross-implementation tests against the .NET SDK and the
+> BIP-340 published vectors. If your own code imported `secp256k1` and relied on
+> this package to pull it in, declare it directly.
+
+Signing, key derivation, and signature verification all need the crypto backend.
+If it is not importable they raise `CryptoBackendUnavailableError` (aliased as
+`Secp256k1UnavailableError`) rather than degrading to a weaker check — in
+particular, verification never reports an unverifiable event as authentic.
+
 ## Quick Start
 
 ### Provider: Publish a Service

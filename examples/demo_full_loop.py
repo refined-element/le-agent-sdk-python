@@ -65,7 +65,7 @@ def generate_throwaway_privkey() -> str:
 def mock_pubkey_from_privkey(privkey_hex: str) -> str:
     """Derive a deterministic mock 'pubkey' from a privkey using SHA-256.
 
-    This is NOT a real Nostr pubkey derivation (which requires secp256k1).
+    This is NOT a real Nostr pubkey derivation (which requires coincurve).
     It is used only in --mock mode to produce consistent, deterministic IDs.
     """
     return hashlib.sha256(bytes.fromhex(privkey_hex)).hexdigest()
@@ -109,7 +109,7 @@ def mock_create_event(
 # ---------------------------------------------------------------------------
 
 async def run_mock_demo() -> None:
-    """Run the full ASA loop with mock data -- no relay, no secp256k1 needed."""
+    """Run the full ASA loop with mock data -- no relay, no crypto backend needed."""
 
     print("\n" + "#" * 70)
     print("#  NOSTRWOLFE E2E DEMO -- MOCK MODE")
@@ -373,12 +373,12 @@ async def run_live_demo(relay_url: str) -> None:
     print(f"#  Relay: {relay_url}")
     print("#" + "#" * 69 + "\n")
 
-    # Check for secp256k1
+    # Check for the BIP-340 crypto backend
     try:
-        from le_agent_sdk.nostr.event import _HAS_SECP256K1
-        if not _HAS_SECP256K1:
-            print("WARNING: secp256k1 not installed. Events will be unsigned.")
-            print("Install with: pip install secp256k1\n")
+        from le_agent_sdk.nostr.event import _HAS_COINCURVE
+        if not _HAS_COINCURVE:
+            print("WARNING: coincurve not installed. Events will be unsigned.")
+            print("Install with: pip install coincurve\n")
     except ImportError:
         pass
 

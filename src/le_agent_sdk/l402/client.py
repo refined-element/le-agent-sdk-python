@@ -22,6 +22,26 @@ import httpx
 logger = logging.getLogger(__name__)
 
 
+def _sdk_version() -> str:
+    """Version string for the User-Agent header.
+
+    Read from the package __version__ rather than hardcoded, so it cannot drift
+    from the real version (it previously advertised 0.1.0 from a 0.3.x release,
+    which made server-side version telemetry misleading). Imported lazily to
+    avoid a circular import: the package __init__ imports this module.
+
+    __version__ is used in preference to importlib.metadata because it reflects
+    the code actually running, which is the point of the header; installed
+    distribution metadata can be stale or absent in a source checkout.
+    """
+    try:
+        from le_agent_sdk import __version__
+
+        return __version__
+    except Exception:  # pragma: no cover - defensive: UA must never break a request
+        return "unknown"
+
+
 @dataclass(frozen=True)
 class L402Challenge:
     """Parsed L402 challenge from a WWW-Authenticate header."""
@@ -79,6 +99,25 @@ _MPP_REALM_RE = re.compile(
     r'(?:^|[\s,])realm\s*=\s*"?(?P<realm>[^",\s]+)"?',
     re.IGNORECASE,
 )
+
+# BOLT-11 human-readable part: "ln" + currency prefix + optional amount.
+# Anchored with a terminating $ so it only ever matches a complete HRP —
+# never a fragment of the bech32 data part. Longer currency prefixes are
+# listed first because Python's alternation takes the first match.
+_BOLT11_HRP_RE = re.compile(
+    r"^ln(?:bcrt|bc|tbs|tb|sb)(?P<amount>\d+)?(?P<multiplier>[munp])?$",
+    re.IGNORECASE,
+)
+
+# Amount multipliers expressed in pico-BTC, so amounts stay exact integers.
+# 1 BTC = 10^12 pico-BTC = 10^8 sats, therefore 1 sat = 10^4 pico-BTC.
+_PICO_BTC_MULTIPLIERS = {
+    "m": 10**9,   # milli-BTC
+    "u": 10**6,   # micro-BTC
+    "n": 10**3,   # nano-BTC
+    "p": 1,       # pico-BTC
+    "": 10**12,   # no multiplier => whole BTC
+}
 
 
 def parse_l402_challenge(headers: dict[str, str]) -> Optional[L402Challenge]:
@@ -230,34 +269,49 @@ class L402Client:
     def _decode_invoice_amount_sats(invoice: str) -> Optional[int]:
         """Extract the amount in satoshis from a BOLT-11 invoice string.
 
-        Returns None if the amount cannot be parsed.
+        Returns:
+            The amount in satoshis, rounded UP to the next whole sat, or None if
+            the invoice encodes no amount or cannot be parsed. None means
+            "amount unknown" — it never means "no amount limit applies". Callers
+            enforcing a budget MUST refuse a None (see _check_amount_against_max).
+
+        Security:
+            The amount is read only from the human-readable part (HRP), which is
+            everything before the final bech32 separator. Scanning the whole
+            string would let the amount be matched from inside the data part of
+            an amountless (i.e. unbounded) invoice, reporting a small bogus
+            amount that passes a budget check.
         """
-        # BOLT-11: starts with "ln" then network (bc/tb/etc), then optional amount
-        # Amount is encoded as: <number><multiplier> where multipliers are:
-        # m=milli, u=micro, n=nano, p=pico (of BTC)
-        inv_lower = invoice.lower()
-        # Strip "lightning:" prefix if present
+        inv_lower = invoice.lower().strip()
+        # Strip "lightning:" URI prefix if present
         if inv_lower.startswith("lightning:"):
             inv_lower = inv_lower[10:]
 
-        match = re.match(r"ln\w+?(\d+)([munp])1", inv_lower)
+        # Per BIP-173 the separator is the LAST "1" in the string: the bech32
+        # data charset excludes "1", so any earlier "1" belongs to the HRP.
+        separator = inv_lower.rfind("1")
+        if separator < 0:
+            return None
+        hrp = inv_lower[:separator]
+
+        # HRP grammar: "ln" + currency prefix + optional (amount + multiplier).
+        # Longer prefixes must precede their own prefixes in the alternation.
+        match = _BOLT11_HRP_RE.match(hrp)
         if not match:
             return None
 
-        amount_num = int(match.group(1))
-        multiplier = match.group(2)
-        # Convert to satoshis (1 BTC = 100_000_000 sats)
-        multiplier_map = {
-            "m": 100_000_00,     # milli-BTC = 100,000 sats (0.001 BTC)
-            "u": 100_00,         # micro-BTC = 100 sats (0.000001 BTC)
-            "n": 0.01,           # nano-BTC = 0.01 sats
-            "p": 0.00001,        # pico-BTC = 0.00001 sats
-        }
-        # milli = 10^-3 BTC = 10^5 sats
-        btc_multipliers = {"m": 1e-3, "u": 1e-6, "n": 1e-9, "p": 1e-12}
-        btc_amount = amount_num * btc_multipliers[multiplier]
-        sats = int(btc_amount * 1e8)
-        return sats
+        amount_digits = match.group("amount")
+        if not amount_digits:
+            return None  # amountless invoice: payer chooses => unknown
+
+        # Integer-only math in pico-BTC; floats would round a budget-critical
+        # value in the unsafe direction.
+        amount_pico = int(amount_digits) * _PICO_BTC_MULTIPLIERS[match.group("multiplier") or ""]
+        if amount_pico <= 0:
+            return None
+
+        # 1 sat = 10_000 pico-BTC. Round UP: never under-report to a budget check.
+        return -(-amount_pico // 10_000)
 
     @staticmethod
     def _validate_preimage(preimage: str) -> bool:
@@ -269,6 +323,110 @@ class L402Client:
             return True
         except ValueError:
             return False
+
+    def _check_amount_against_max(
+        self,
+        challenge: L402Challenge | MppChallenge,
+        effective_max: Optional[int],
+    ) -> None:
+        """Enforce the payment ceiling before any invoice reaches the wallet.
+
+        The invariant is: an amount that cannot be determined is refused.
+        A budget is a guarantee ("never pay more than N"), and an invoice whose
+        amount cannot be proven <= N cannot be paid without breaking it. The
+        wallet callback is arbitrary caller-supplied code, so handing it an
+        unbounded invoice delegates an unbounded spend.
+
+        No ceiling configured (None) means the caller explicitly opted out of
+        budget enforcement, so any invoice — known or unknown — is allowed
+        through; refusing there would add no safety and break the documented
+        "None means no limit" contract.
+
+        Raises:
+            ValueError: If the invoice exceeds the ceiling, or if a ceiling is
+                configured and the amount cannot be determined.
+        """
+        if effective_max is None:
+            return
+
+        invoice_sats = self._decode_invoice_amount_sats(challenge.invoice)
+
+        if invoice_sats is None:
+            raise ValueError(
+                "Invoice amount could not be determined, and a maximum of "
+                f"{effective_max} sats is configured. Refusing to pay: an "
+                "invoice with no verifiable amount cannot be checked against a "
+                "budget and would hand an unbounded payment to the wallet "
+                f"callback. Invoice: {challenge.invoice[:40]}..."
+            )
+
+        if invoice_sats > effective_max:
+            raise ValueError(
+                f"Invoice amount ({invoice_sats} sats) exceeds maximum allowed "
+                f"({effective_max} sats). Invoice: {challenge.invoice[:40]}..."
+            )
+
+    async def _execute_payment(
+        self,
+        challenge: L402Challenge | MppChallenge,
+        pay_invoice_callback: Any,
+        effective_max: Optional[int],
+        url: str,
+    ) -> str:
+        """Check the budget, pay the invoice, and validate the preimage.
+
+        The single payment path shared by access() and pay_and_access() so the
+        budget ceiling can never apply to one entry point but not the other.
+
+        Returns:
+            The validated preimage.
+
+        Raises:
+            ValueError: If the amount is over budget/undeterminable, or the
+                callback returns a malformed preimage.
+            RuntimeError: If the payment callback itself fails.
+        """
+        # Budget gate FIRST: nothing reaches the wallet before this passes.
+        self._check_amount_against_max(challenge, effective_max)
+
+        try:
+            preimage = await pay_invoice_callback(challenge.invoice)
+        except Exception as exc:
+            logger.error(
+                "Error in pay_invoice_callback for URL %r: %s", url, exc, exc_info=True
+            )
+            raise RuntimeError(f"Payment callback failed: {exc}") from exc
+
+        if not self._validate_preimage(preimage):
+            logger.error(
+                "Invalid preimage returned from pay callback: expected 64-char hex, "
+                "got %r (length=%d)",
+                preimage[:20] if isinstance(preimage, str) else type(preimage),
+                len(preimage) if isinstance(preimage, str) else 0,
+            )
+            raise ValueError(
+                f"Invalid preimage from payment callback: expected 64-character hex string, "
+                f"got length {len(preimage) if isinstance(preimage, str) else 'N/A'}"
+            )
+
+        # Only L402 credentials are cacheable (keyed by macaroon); MPP has none.
+        if isinstance(challenge, L402Challenge):
+            self._cache[challenge.macaroon] = preimage
+
+        protocol = "MPP" if isinstance(challenge, MppChallenge) else "L402"
+        logger.info("%s payment succeeded for %s", protocol, url)
+        logger.debug("%s preimage (first 8 chars): %.8s...", protocol, preimage)
+
+        return preimage
+
+    @staticmethod
+    def _build_auth_header(
+        challenge: L402Challenge | MppChallenge, preimage: str
+    ) -> str:
+        """Build the Authorization header value for a paid challenge."""
+        if isinstance(challenge, MppChallenge):
+            return f'Payment method="lightning", preimage="{preimage}"'
+        return f"L402 {challenge.macaroon}:{preimage}"
 
     async def access(
         self,
@@ -324,49 +482,14 @@ class L402Client:
             retry_response = await client.request(method, url, headers=headers, **kwargs)
             return retry_response
 
-        # Check invoice amount against limit
+        # Budget check, payment, and preimage validation (shared path)
         effective_max = max_amount_sats if max_amount_sats is not None else self._max_amount_sats
-        if effective_max is not None:
-            invoice_sats = self._decode_invoice_amount_sats(challenge.invoice)
-            if invoice_sats is not None and invoice_sats > effective_max:
-                raise ValueError(
-                    f"Invoice amount ({invoice_sats} sats) exceeds maximum allowed "
-                    f"({effective_max} sats). Invoice: {challenge.invoice[:40]}..."
-                )
-
-        # Pay the invoice with error handling on the callback
-        try:
-            preimage = await self._pay_callback(challenge.invoice)
-        except Exception as exc:
-            logger.error("pay_invoice_callback failed: %s", exc)
-            raise RuntimeError(f"Payment callback failed: {exc}") from exc
-
-        # Validate preimage format
-        if not self._validate_preimage(preimage):
-            logger.error(
-                "Invalid preimage returned from pay callback: expected 64-char hex, "
-                "got %r (length=%d)",
-                preimage[:20] if isinstance(preimage, str) else type(preimage),
-                len(preimage) if isinstance(preimage, str) else 0,
-            )
-            raise ValueError(
-                f"Invalid preimage from payment callback: expected 64-character hex string, "
-                f"got length {len(preimage) if isinstance(preimage, str) else 'N/A'}"
-            )
-
-        # Build the correct Authorization header based on challenge type
-        if isinstance(challenge, MppChallenge):
-            auth_header = f'Payment method="lightning", preimage="{preimage}"'
-            logger.info("MPP payment succeeded for %s", url)
-            logger.debug("MPP preimage (first 8 chars): %.8s...", preimage)
-        else:
-            self._cache[challenge.macaroon] = preimage
-            auth_header = f"L402 {challenge.macaroon}:{preimage}"
-            logger.info("L402 payment succeeded for %s", url)
-            logger.debug("L402 preimage (first 8 chars): %.8s...", preimage)
+        preimage = await self._execute_payment(
+            challenge, self._pay_callback, effective_max, url
+        )
 
         # Retry the request with credentials, with retry+backoff
-        headers["Authorization"] = auth_header
+        headers["Authorization"] = self._build_auth_header(challenge, preimage)
         max_retries = 3
         last_exc: Optional[Exception] = None
 
@@ -401,6 +524,7 @@ class L402Client:
         pay_invoice_callback: Any,
         method: str = "GET",
         headers: Optional[dict[str, str]] = None,
+        max_amount_sats: Optional[int] = None,
         **kwargs: Any,
     ) -> httpx.Response:
         """Full L402 flow: request, get 402, pay invoice, retry with token.
@@ -410,10 +534,16 @@ class L402Client:
             pay_invoice_callback: Async callable(invoice: str) -> preimage: str.
             method: HTTP method.
             headers: Optional request headers.
+            max_amount_sats: Override max payment amount for this request.
+                Falls back to the instance-level max_amount_sats.
             **kwargs: Additional httpx request kwargs.
 
         Returns:
             The final HTTP response after payment.
+
+        Raises:
+            ValueError: If the invoice amount exceeds max_amount_sats, or if a
+                limit is configured and the amount cannot be determined.
         """
         headers = dict(headers or {})
         client = self._ensure_client()
@@ -438,39 +568,13 @@ class L402Client:
             retry_response = await client.request(method, url, headers=headers, **kwargs)
             return retry_response
 
-        try:
-            preimage = await pay_invoice_callback(challenge.invoice)
-        except Exception as exc:
-            logger.error(
-                "Error in pay_invoice_callback during pay_and_access for URL %r: %s",
-                url,
-                exc,
-                exc_info=True,
-            )
-            raise RuntimeError(
-                "Payment callback failed during pay_and_access; see logs for details"
-            ) from exc
+        # Budget check, payment, and preimage validation (shared path)
+        effective_max = max_amount_sats if max_amount_sats is not None else self._max_amount_sats
+        preimage = await self._execute_payment(
+            challenge, pay_invoice_callback, effective_max, url
+        )
 
-        # Validate preimage format before constructing credentials
-        if not self._validate_preimage(preimage):
-            logger.error(
-                "Invalid preimage returned from pay callback in pay_and_access: "
-                "expected 64-char hex, got %r (length=%d)",
-                preimage[:20] if isinstance(preimage, str) else type(preimage),
-                len(preimage) if isinstance(preimage, str) else 0,
-            )
-            raise ValueError(
-                f"Invalid preimage from payment callback: expected 64-character hex string, "
-                f"got length {len(preimage) if isinstance(preimage, str) else 'N/A'}"
-            )
-
-        # Build the correct Authorization header based on challenge type
-        if isinstance(challenge, MppChallenge):
-            headers["Authorization"] = f'Payment method="lightning", preimage="{preimage}"'
-        else:
-            self._cache[challenge.macaroon] = preimage
-            headers["Authorization"] = f"L402 {challenge.macaroon}:{preimage}"
-
+        headers["Authorization"] = self._build_auth_header(challenge, preimage)
         retry_response = await client.request(method, url, headers=headers, **kwargs)
         return retry_response
 
@@ -542,7 +646,7 @@ class L402ProducerClient:
                 "X-Api-Key": self._api_key,
                 "Content-Type": "application/json",
                 "Accept": "application/json",
-                "User-Agent": "LE-Agent-SDK-Python/0.1.0",
+                "User-Agent": f"LE-Agent-SDK-Python/{_sdk_version()}",
             }
             self._client = httpx.AsyncClient(headers=headers, **self._httpx_kwargs)
         return self._client

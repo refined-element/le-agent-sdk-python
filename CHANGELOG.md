@@ -6,6 +6,23 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 Entries begin at 0.4.0; for earlier history see the
 [commit log](https://github.com/refined-element/le-agent-sdk-python/commits/master).
 
+## [0.4.1] - 2026-07-17
+
+Security fix. Hardens capability discovery against malformed events from a hostile
+or misbehaving relay — **upgrading is recommended**.
+
+### Fixed
+
+- `discover()` no longer aborts the entire batch when a single relay event is
+  malformed. A capability event with an unparseable `price` tag, a dict missing a
+  committed field (`pubkey`/`created_at`/`kind`/`tags`/`content`), or a non-dict
+  payload could each make `discover()` raise and drop *every* capability in the
+  response — so one hostile or misbehaving relay could DoS discovery for every
+  agent. Each event is now authenticated and parsed independently: a malformed
+  event is skipped and logged as a warning (fail closed, loudly) while the valid
+  capabilities are still returned. Crypto-backend faults continue to propagate
+  (fail closed, unchanged).
+
 ## [0.4.0] - 2026-07-17
 
 Security release. Fixes signature verification silently passing, two payment-budget

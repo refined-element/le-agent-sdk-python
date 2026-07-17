@@ -135,9 +135,10 @@ class TestPythonSignedEventsMatchDotNetKeys:
     def test_pubkey_derivation_matches_dotnet(self, private_key, expected_pubkey):
         """x-only derivation must drop y-parity the same way in both SDKs.
 
-        Two of these keys have odd y, so a binding that leaked parity into the
-        x-only key would disagree here and silently produce events attributed to
-        a pubkey no one else computes.
+        One of these keys has odd y (0b432b26...), so a binding that leaked parity
+        into the x-only key would disagree here and silently produce events
+        attributed to a pubkey no one else computes. Keep that vector: drop it and
+        the parity coverage silently falls to zero.
         """
         assert NostrEvent.pubkey_from_private_key(private_key) == expected_pubkey
 

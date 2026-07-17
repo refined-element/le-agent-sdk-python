@@ -4,7 +4,7 @@ All notable changes to `le-agent-sdk` are documented here.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Entries begin at 0.4.0; for earlier history see the
-[commit log](https://github.com/refined-element/le-agent-sdk-python/commits/main).
+[commit log](https://github.com/refined-element/le-agent-sdk-python/commits/master).
 
 ## [0.4.0] - 2026-07-17
 

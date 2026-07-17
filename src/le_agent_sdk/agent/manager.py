@@ -15,7 +15,7 @@ from le_agent_sdk.models.agreement import AgentServiceAgreement
 from le_agent_sdk.models.attestation import AgentAttestation
 from le_agent_sdk.models.capability import AgentCapability
 from le_agent_sdk.models.request import AgentServiceRequest
-from le_agent_sdk.nostr.event import NostrEvent, Secp256k1UnavailableError
+from le_agent_sdk.nostr.event import CryptoBackendUnavailableError, NostrEvent
 from le_agent_sdk.nostr.relay import RelayClient
 from le_agent_sdk.nostr.tags import TagParser
 
@@ -78,7 +78,7 @@ class AgentManager:
 
         A verification failure drops only the offending event: one bad relay in
         the pool must not be able to fail an otherwise good query. A RuntimeError
-        (secp256k1 unavailable) is left to propagate — that is an environment
+        (crypto backend unavailable) is left to propagate — that is an environment
         fault affecting every event, and silently returning zero results would
         misrepresent it as "nothing found".
         """
@@ -338,9 +338,9 @@ class AgentManager:
                                 if not self._is_event_authentic(event_data):
                                     continue
                                 yield AgentServiceRequest.from_nostr_event(event_data)
-                except Secp256k1UnavailableError:
+                except CryptoBackendUnavailableError:
                     # Environment fault, not a relay fault: reconnecting cannot
-                    # fix a missing native dependency. Surface it immediately
+                    # fix a missing crypto backend. Surface it immediately
                     # instead of burning the reconnect budget on it.
                     raise
                 except Exception:

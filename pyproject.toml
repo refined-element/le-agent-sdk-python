@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "le-agent-sdk"
-version = "0.3.3"
+version = "0.4.0"
 description = "Python SDK for Lightning Enable Agent Service Agreements"
 requires-python = ">=3.10"
 license = "MIT"
@@ -26,7 +26,10 @@ classifiers = [
 dependencies = [
     "httpx>=0.24.0",
     "websockets>=11.0",
-    "secp256k1>=0.14.0",
+    # BIP-340 Schnorr over secp256k1. coincurve ships prebuilt wheels for the
+    # platforms we support; the `secp256k1` package it replaced in 0.4.0 required
+    # a native build toolchain and could not be installed on Windows at all.
+    "coincurve>=18.0",
     "l402-requests>=0.1.0",
 ]
 
@@ -34,10 +37,6 @@ dependencies = [
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",
-    # Pure-wheel BIP-340 impl, used only to sign real fixtures in the signature
-    # tests. secp256k1 (the runtime dep) needs a native build that is often
-    # unavailable, which would otherwise leave the signature path untested.
-    "coincurve>=18.0",
 ]
 
 [project.urls]

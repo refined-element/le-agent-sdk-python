@@ -1,7 +1,7 @@
 """Nostr event builder and signing (NIP-01).
 
 Handles event creation, ID computation (SHA-256 of canonical serialization),
-and Schnorr signing (BIP-340) via the secp256k1 library.
+and Schnorr signing (BIP-340) via the coincurve library.
 """
 
 from __future__ import annotations
@@ -11,29 +11,43 @@ import json
 import time
 from typing import Any, Optional
 
-# secp256k1 is a hard dependency, but it requires a native build and can be
-# absent from an otherwise "successful" install. Import defensively so that
-# import-time failure is deferred to the operations that actually need it.
+# coincurve provides BIP-340 Schnorr over secp256k1 and ships prebuilt wheels
+# for every platform we support, so a normal `pip install` is sufficient.
 #
-# Every operation that depends on it — sign(), pubkey_from_private_key() and
-# verify() — raises RuntimeError when it is missing. None of them degrade to a
-# weaker check. Only building/serializing unsigned events works without it.
+# The import is still guarded. A wheel can be missing for an unusual
+# platform/interpreter combination, and an install can be pruned after the fact,
+# so the failure mode has to be defined rather than incidental. Every operation
+# that depends on it — sign(), pubkey_from_private_key() and verify() — raises
+# when it is missing. None of them degrade to a weaker check. Only
+# building/serializing unsigned events works without it.
 try:
-    import secp256k1
+    import coincurve
 
-    _HAS_SECP256K1 = True
+    _HAS_COINCURVE = True
 except ImportError:
-    _HAS_SECP256K1 = False
+    _HAS_COINCURVE = False
 
 
-class Secp256k1UnavailableError(RuntimeError):
-    """Raised when an operation needs secp256k1 but it could not be imported.
+class CryptoBackendUnavailableError(RuntimeError):
+    """Raised when an operation needs the BIP-340 backend but it is unimportable.
 
     Subclasses RuntimeError so existing `except RuntimeError` handlers keep
     working. Distinguishable so that callers can tell this environment fault
     apart from an operational error (e.g. a relay disconnect) and avoid
     retrying something that will never succeed.
     """
+
+
+# The backend moved from `secp256k1` to `coincurve` in 0.4.0, which dates the
+# old name. It is kept as an alias so `except Secp256k1UnavailableError` keeps
+# working: the curve is still secp256k1, only the binding changed. Prefer
+# CryptoBackendUnavailableError in new code.
+Secp256k1UnavailableError = CryptoBackendUnavailableError
+
+_MISSING_BACKEND_HINT = (
+    "coincurve is required for BIP-340 Schnorr operations. "
+    "Install with: pip install coincurve"
+)
 
 
 class NostrEvent:
@@ -72,21 +86,17 @@ class NostrEvent:
         Returns:
             32-byte x-only public key as hex string.
         """
-        if not _HAS_SECP256K1:
-            raise Secp256k1UnavailableError(
-                "secp256k1 library is required for key derivation. "
-                "Install with: pip install secp256k1"
+        if not _HAS_COINCURVE:
+            raise CryptoBackendUnavailableError(
+                f"Key derivation is unavailable: {_MISSING_BACKEND_HINT}"
             )
         privkey_bytes = bytes.fromhex(private_key_hex)
         if len(privkey_bytes) != 32:
             raise ValueError(
                 f"Private key must be 32 bytes, got {len(privkey_bytes)} bytes"
             )
-        keypair = secp256k1.PrivateKey(privkey_bytes)
-        # secp256k1 public key is 33 bytes (compressed); strip the prefix byte
-        pubkey_bytes = keypair.pubkey.serialize(compressed=True)
-        # x-only pubkey is the last 32 bytes of the compressed key (drop 0x02/0x03 prefix)
-        return pubkey_bytes[1:].hex()
+        # BIP-340 keys are x-only: the x coordinate with the y parity dropped.
+        return coincurve.PublicKeyXOnly.from_secret(privkey_bytes).format().hex()
 
     @staticmethod
     def sign(event_id_hex: str, private_key_hex: str) -> str:
@@ -95,21 +105,21 @@ class NostrEvent:
         Returns:
             64-byte signature as hex string.
         """
-        if not _HAS_SECP256K1:
-            raise Secp256k1UnavailableError(
-                "secp256k1 library is required for signing. "
-                "Install with: pip install secp256k1"
+        if not _HAS_COINCURVE:
+            raise CryptoBackendUnavailableError(
+                f"Signing is unavailable: {_MISSING_BACKEND_HINT}"
             )
         privkey_bytes = bytes.fromhex(private_key_hex)
         if len(privkey_bytes) != 32:
             raise ValueError(
                 f"Private key must be 32 bytes, got {len(privkey_bytes)} bytes"
             )
+        # NIP-01 signs the 32-byte event id directly; it is already a digest and
+        # must not be hashed again. sign_schnorr takes the message unhashed.
         msg_bytes = bytes.fromhex(event_id_hex)
 
-        keypair = secp256k1.PrivateKey(privkey_bytes)
-        sig = keypair.schnorr_sign(msg_bytes, bip340tag=b"", raw=True)
-        return sig.hex()
+        keypair = coincurve.PrivateKey(privkey_bytes)
+        return keypair.sign_schnorr(msg_bytes).hex()
 
     @staticmethod
     def verify(event: dict[str, Any]) -> bool:
@@ -117,15 +127,14 @@ class NostrEvent:
 
         The ID alone is NOT authentication: it is a plain SHA-256 over public
         fields with no secret input, so anyone can compute a matching ID for an
-        event they forged. Authenticity comes solely from the BIP-340 signature,
-        which requires secp256k1.
+        event they forged. Authenticity comes solely from the BIP-340 signature.
 
         Returns:
             True only if the ID matches AND the signature is a valid BIP-340
             signature over that ID under the claimed pubkey. False otherwise.
 
         Raises:
-            Secp256k1UnavailableError: If secp256k1 is unavailable, so the
+            CryptoBackendUnavailableError: If coincurve is unavailable, so the
                 signature cannot be checked. This fails closed and loudly,
                 consistent with sign() and pubkey_from_private_key(). It is a
                 RuntimeError subclass and never silently passes.
@@ -135,12 +144,14 @@ class NostrEvent:
         if computed_id != event.get("id", ""):
             return False
 
-        if not _HAS_SECP256K1:
-            raise Secp256k1UnavailableError(
-                "secp256k1 library is required for signature verification. "
-                "Refusing to treat the event as verified: the event ID is a "
-                "plain hash of public fields and proves nothing about "
-                "authenticity. Install with: pip install secp256k1"
+        # Raised before the try below, so a missing backend can never be caught
+        # and turned into a plain False — an unverifiable event must not be
+        # reported as merely invalid.
+        if not _HAS_COINCURVE:
+            raise CryptoBackendUnavailableError(
+                "Signature verification is unavailable. Refusing to treat the "
+                "event as verified: the event ID is a plain hash of public "
+                f"fields and proves nothing about authenticity. {_MISSING_BACKEND_HINT}"
             )
 
         pubkey_hex = event.get("pubkey", "")
@@ -151,11 +162,12 @@ class NostrEvent:
         try:
             msg_bytes = bytes.fromhex(event["id"])
             sig_bytes = bytes.fromhex(sig_hex)
-            # Reconstruct compressed pubkey (prepend 0x02)
-            pubkey_bytes = bytes.fromhex("02" + pubkey_hex)
-            pubkey = secp256k1.PublicKey(pubkey_bytes, raw=True)
-            return pubkey.schnorr_verify(msg_bytes, sig_bytes, bip340tag=b"", raw=True)
+            # BIP-340 verification takes the 32-byte x-only pubkey directly.
+            pubkey = coincurve.PublicKeyXOnly(bytes.fromhex(pubkey_hex))
+            return bool(pubkey.verify(sig_bytes, msg_bytes))
         except Exception:
+            # Malformed pubkey/signature/id — not authentic. Distinct from a
+            # missing backend, which is raised above and never reaches here.
             return False
 
     @staticmethod

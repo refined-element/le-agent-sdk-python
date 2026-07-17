@@ -1,0 +1,82 @@
+{
+  "_comment": [
+    "Nostr events signed by the .NET SDK (le-agent-sdk-dotnet) using",
+    "NBitcoin.Secp256k1 3.2.0 — an implementation with no code in common with",
+    "Python's coincurve. They are committed so the Python suite proves wire",
+    "compatibility on every run without needing a .NET toolchain in CI.",
+    "",
+    "These are a consensus artifact of the protocol, not test scaffolding: if a",
+    "change makes them stop verifying, this SDK has broken signature",
+    "compatibility with every other implementation on the network. Regenerate",
+    "them only when the .NET SDK's own wire format deliberately changes, never",
+    "to make a failing test pass.",
+    "",
+    "Generated from LightningEnable.AgentSdk.Nostr.NostrEvent.Sign() via",
+    "NostrEvent.GetPublicKey() / ComputeId(), .NET 8."
+  ],
+  "events": [
+    {
+      "id": "fdf6fbd62ea5c7b6b0ba5e7e4cf5e99b1d1f1795535b159cb6cb15644e45f361",
+      "pubkey": "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+      "created_at": 1700000000,
+      "kind": 38400,
+      "tags": [
+        [
+          "d",
+          "svc-dotnet"
+        ],
+        [
+          "s",
+          "ai"
+        ]
+      ],
+      "content": "Independent .NET-signed capability advertisement",
+      "sig": "bf080521c02b2bbce3f7c360deb2353230b6292fa602c19a031b9041c24661c8351ceb0d494932f2d8d739f30cdb4942b52d0d6d0eae09b7f68520b0e6d41ee1",
+      "_label": "ascii capability advertisement (kind 38400)"
+    },
+    {
+      "id": "66609ad11d3d018f116e5872ff147956156a13ff010b81178eb181e22bd0eb80",
+      "pubkey": "dff1d77f2a671c5f36183726db2341be58feae1da2deced843240f7b502ba659",
+      "created_at": 1700000001,
+      "kind": 38401,
+      "tags": [
+        [
+          "p",
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ],
+        [
+          "amount",
+          "1000"
+        ]
+      ],
+      "content": "service request from the .NET SDK",
+      "sig": "f62cd11fe887ba732532a1e8bab05cc6dd52c860785e932f6c97a5e7b3b60d2a375cec99002c5e90a13586bb483b27b8cc44b2bcc9f780d73470d641868a4b76",
+      "_label": "service request with tags (kind 38401)"
+    },
+    {
+      "id": "9a9679bfd0e5e2c375fa6c6f95e6b84bda4d3809eed0b3d5552c541a9003a3d7",
+      "pubkey": "dd308afec5777e13121fa72b9cc1b7cc0139715309b086c960e18fd969774eb8",
+      "created_at": 1700000002,
+      "kind": 1,
+      "tags": [
+        [
+          "t",
+          "ünïcödé"
+        ]
+      ],
+      "content": "unicode ünïcödé 日本語 🚀 astral + \"quotes\" and \\backslash\\",
+      "sig": "1d0a2c63df9a2d392f759137215888a6213e6862bdc317d27add823f08288b22a0387a465a936cd2a624b10b32bc846037178b04be036985ae9b885e3cb81aa1",
+      "_label": "unicode + astral plane + escaped quotes/backslashes (kind 1)"
+    },
+    {
+      "id": "03164c3bd6496a6554d09ecbceb9b2c8cc3af3e34aaf376f33e9269c61d74fbc",
+      "pubkey": "25d1dff95105f5253c4022f628a996ad3a0d95fbf21d468a1b33f8c160d8f517",
+      "created_at": 1700000003,
+      "kind": 0,
+      "tags": [],
+      "content": "",
+      "sig": "ef9eff4c10c9e95685e847a96d9d2c30a6082c18603f6bc57d2f0fa1978f72b226178bf51d19e6e4c970424e78b026ea9c139955cd153a6d3985c8e937f520a1",
+      "_label": "empty content, no tags (kind 0)"
+    }
+  ]
+}

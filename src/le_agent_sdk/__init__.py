@@ -4,7 +4,11 @@ from le_agent_sdk.models.capability import AgentCapability, AgentPricing
 from le_agent_sdk.models.request import AgentServiceRequest
 from le_agent_sdk.models.agreement import AgentServiceAgreement
 from le_agent_sdk.models.attestation import AgentAttestation
-from le_agent_sdk.nostr.event import NostrEvent, Secp256k1UnavailableError
+from le_agent_sdk.nostr.event import (
+    CryptoBackendUnavailableError,
+    NostrEvent,
+    Secp256k1UnavailableError,
+)
 from le_agent_sdk.nostr.relay import RelayClient
 from le_agent_sdk.nostr.tags import TagParser
 from le_agent_sdk.l402.client import L402Client, L402ProducerClient
@@ -17,6 +21,9 @@ __all__ = [
     "AgentServiceAgreement",
     "AgentAttestation",
     "NostrEvent",
+    "CryptoBackendUnavailableError",
+    # Pre-0.4.0 alias of CryptoBackendUnavailableError, kept for callers
+    # catching it by name.
     "Secp256k1UnavailableError",
     "RelayClient",
     "TagParser",
@@ -25,4 +32,4 @@ __all__ = [
     "AgentManager",
 ]
 
-__version__ = "0.3.3"
+__version__ = "0.4.0"

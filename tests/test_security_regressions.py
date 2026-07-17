@@ -4,7 +4,7 @@ Each test in this module corresponds to a confirmed vulnerability. They are
 written to fail against the pre-fix code and pass after the fix.
 
 Covered:
-  1. NostrEvent.verify() fail-open when secp256k1 is unavailable.
+  1. NostrEvent.verify() fail-open when the crypto backend is unavailable.
   2. L402Client.pay_and_access() ignoring max_amount_sats.
   3. Budget check skipped when the invoice amount is unparseable.
   4. Reputation scoring ignoring out-of-range ratings (already correct — locked in).
@@ -19,7 +19,11 @@ from le_agent_sdk.agent.manager import AgentManager
 from le_agent_sdk.l402.client import L402Client
 from le_agent_sdk.models.attestation import AgentAttestation
 from le_agent_sdk.nostr import event as event_module
-from le_agent_sdk.nostr.event import NostrEvent, Secp256k1UnavailableError
+from le_agent_sdk.nostr.event import (
+    CryptoBackendUnavailableError,
+    NostrEvent,
+    Secp256k1UnavailableError,
+)
 
 # --- Fixtures / helpers -----------------------------------------------------
 
@@ -39,25 +43,43 @@ def _forged_event(pubkey: str = "de" * 32) -> dict:
     return event
 
 
-class TestVerifyFailsClosedWithoutSecp256k1:
-    """Finding 1: verify() returned True when secp256k1 was unimportable."""
+class TestVerifyFailsClosedWithoutCryptoBackend:
+    """Finding 1: verify() returned True when the crypto backend was unimportable.
 
-    def test_verify_raises_when_secp256k1_unavailable(self):
-        """Missing native dep must be loud, not a silent pass.
+    The backend moved from secp256k1 to coincurve in 0.4.0. coincurve ships
+    prebuilt wheels, so the "absent backend" case is far less likely to occur by
+    accident than it was — but "unlikely" is not "impossible" (an unusual
+    platform with no wheel, or a pruned install), and the fail-open bug this
+    class covers is exactly what happens when an unlikely branch is left
+    undefined. The behaviour is still pinned.
+    """
+
+    def test_verify_raises_when_backend_unavailable(self):
+        """Missing backend must be loud, not a silent pass.
 
         Consistent with sign()/pubkey_from_private_key(), which already raise.
         """
-        with patch.object(event_module, "_HAS_SECP256K1", False):
-            with pytest.raises(RuntimeError, match="secp256k1"):
+        with patch.object(event_module, "_HAS_COINCURVE", False):
+            with pytest.raises(RuntimeError, match="coincurve"):
+                NostrEvent.verify(_forged_event())
+
+    def test_verify_raises_specific_error_type(self):
+        """The raised type must stay catchable under both names."""
+        with patch.object(event_module, "_HAS_COINCURVE", False):
+            with pytest.raises(CryptoBackendUnavailableError):
+                NostrEvent.verify(_forged_event())
+        # The pre-0.4.0 name is an alias, so existing handlers keep working.
+        with patch.object(event_module, "_HAS_COINCURVE", False):
+            with pytest.raises(Secp256k1UnavailableError):
                 NostrEvent.verify(_forged_event())
 
     def test_forged_event_does_not_verify_as_true(self):
         """A forged event must never come back as verified.
 
-        Regardless of whether secp256k1 is installed, the one outcome that must
+        Regardless of whether the backend is installed, the one outcome that must
         be impossible is a `True` return for an event with a bogus signature.
         """
-        with patch.object(event_module, "_HAS_SECP256K1", False):
+        with patch.object(event_module, "_HAS_COINCURVE", False):
             try:
                 result = NostrEvent.verify(_forged_event())
             except RuntimeError:
@@ -65,11 +87,21 @@ class TestVerifyFailsClosedWithoutSecp256k1:
             assert result is not True, "forged event verified as authentic"
 
     def test_verify_still_rejects_id_mismatch_before_dep_check(self):
-        """A tampered ID is rejected without needing the native dep."""
+        """A tampered ID is rejected without needing the backend."""
         event = _forged_event()
         event["content"] = "tampered after id was computed"
-        with patch.object(event_module, "_HAS_SECP256K1", False):
+        with patch.object(event_module, "_HAS_COINCURVE", False):
             assert NostrEvent.verify(event) is False
+
+    def test_sign_raises_when_backend_unavailable(self):
+        with patch.object(event_module, "_HAS_COINCURVE", False):
+            with pytest.raises(CryptoBackendUnavailableError, match="coincurve"):
+                NostrEvent.sign("ab" * 32, "01" * 32)
+
+    def test_pubkey_derivation_raises_when_backend_unavailable(self):
+        with patch.object(event_module, "_HAS_COINCURVE", False):
+            with pytest.raises(CryptoBackendUnavailableError, match="coincurve"):
+                NostrEvent.pubkey_from_private_key("01" * 32)
 
 
 class TestVerifyAcceptsGenuineRejectsForged:
@@ -78,87 +110,68 @@ class TestVerifyAcceptsGenuineRejectsForged:
     Fixing a fail-open bug by failing everything closed would be no fix. These
     tests exercise the real BIP-340 path with genuine signatures.
 
-    secp256k1 needs a native build and is frequently unimportable, so signatures
-    are produced with coincurve (pure wheels) and the small slice of the
-    secp256k1 API that verify() uses is shimmed over it. The crypto under test
-    is real; only the binding is substituted.
+    Before 0.4.0 these signed fixtures with coincurve and shimmed it over the
+    secp256k1 binding, because secp256k1 needs a native build and was routinely
+    unimportable — so the signature path could not otherwise be tested at all.
+    coincurve is now the runtime backend, so the shim is gone and these drive
+    the real production code path end to end. Cross-implementation agreement is
+    covered separately in test_interop.py; the concern here is that verify()
+    tells genuine and forged apart.
     """
 
     @staticmethod
-    def _install_shim(monkeypatch):
-        coincurve = pytest.importorskip(
-            "coincurve", reason="needs a BIP-340 impl to sign real fixtures"
+    def _sign(private_hex: str, content: str = "genuine") -> dict:
+        """Build a genuinely signed event through the SDK's own signing path."""
+        return NostrEvent.create(
+            kind=38400,
+            content=content,
+            tags=[["d", "svc-a"]],
+            private_key=private_hex,
+            created_at=1700000000,
         )
 
-        class _ShimPublicKey:
-            def __init__(self, data, raw=True):
-                # verify() prepends a 0x02 prefix; x-only key is the remainder.
-                self._xonly = coincurve.PublicKeyXOnly(data[1:])
+    def test_genuine_signed_event_verifies(self):
+        assert NostrEvent.verify(self._sign("01" * 32)) is True
 
-            def schnorr_verify(self, msg, sig, bip340tag=b"", raw=True):
-                return self._xonly.verify(sig, msg)
-
-        class _ShimSecp256k1:
-            PublicKey = _ShimPublicKey
-
-        monkeypatch.setattr(event_module, "secp256k1", _ShimSecp256k1, raising=False)
-        monkeypatch.setattr(event_module, "_HAS_SECP256K1", True)
-        return coincurve
-
-    @staticmethod
-    def _sign(coincurve, private_hex: str, content: str = "genuine") -> dict:
-        priv = coincurve.PrivateKey(bytes.fromhex(private_hex))
-        xonly_pubkey = priv.public_key.format(compressed=True)[1:]
-        event = {
-            "pubkey": xonly_pubkey.hex(),
-            "created_at": 1700000000,
-            "kind": 38400,
-            "tags": [["d", "svc-a"]],
-            "content": content,
-        }
-        event["id"] = NostrEvent.compute_id(event)
-        event["sig"] = priv.sign_schnorr(bytes.fromhex(event["id"])).hex()
-        return event
-
-    def test_genuine_signed_event_verifies(self, monkeypatch):
-        coincurve = self._install_shim(monkeypatch)
-        event = self._sign(coincurve, "01" * 32)
-        assert NostrEvent.verify(event) is True
-
-    def test_forged_signature_rejected(self, monkeypatch):
-        coincurve = self._install_shim(monkeypatch)
-        event = self._sign(coincurve, "01" * 32)
+    def test_forged_signature_rejected(self):
+        event = self._sign("01" * 32)
         event["sig"] = "00" * 64
         assert NostrEvent.verify(event) is False
 
-    def test_tampered_content_rejected(self, monkeypatch):
-        coincurve = self._install_shim(monkeypatch)
-        event = self._sign(coincurve, "01" * 32)
+    def test_tampered_content_rejected(self):
+        event = self._sign("01" * 32)
         event["content"] = "tampered"
         assert NostrEvent.verify(event) is False
 
-    def test_event_reattributed_to_another_pubkey_rejected(self, monkeypatch):
+    def test_event_reattributed_to_another_pubkey_rejected(self):
         """The core attack: swap the pubkey and recompute a valid ID.
 
         The ID check alone passes here — it is just a hash of public fields.
         Only the signature check stops it.
         """
-        coincurve = self._install_shim(monkeypatch)
-        event = self._sign(coincurve, "01" * 32)
+        event = self._sign("01" * 32)
 
-        victim = coincurve.PrivateKey(bytes.fromhex("02" * 32))
-        event["pubkey"] = victim.public_key.format(compressed=True)[1:].hex()
+        event["pubkey"] = NostrEvent.pubkey_from_private_key("02" * 32)
         event["id"] = NostrEvent.compute_id(event)  # ID now matches again
 
         assert NostrEvent.compute_id(event) == event["id"], "ID check would pass"
         assert NostrEvent.verify(event) is False, "reattributed event was accepted"
 
-    def test_signature_from_different_key_rejected(self, monkeypatch):
-        coincurve = self._install_shim(monkeypatch)
-        event = self._sign(coincurve, "01" * 32)
-        attacker = coincurve.PrivateKey(bytes.fromhex("03" * 32))
-        event["sig"] = attacker.sign_schnorr(bytes.fromhex(event["id"])).hex()
+    def test_signature_from_different_key_rejected(self):
+        event = self._sign("01" * 32)
+        event["sig"] = NostrEvent.sign(event["id"], "03" * 32)
         assert NostrEvent.verify(event) is False
+
+    def test_sign_verify_round_trips_through_public_api(self):
+        """create() -> verify() must hold for the documented entry point."""
+        event = NostrEvent.create(
+            kind=38400,
+            content="round trip",
+            tags=[["d", "svc-a"], ["s", "ai"]],
+            private_key="04" * 32,
+        )
+        assert event["pubkey"] == NostrEvent.pubkey_from_private_key("04" * 32)
+        assert NostrEvent.verify(event) is True
 
 
 class TestPayAndAccessRespectsMaxAmount:
@@ -392,9 +405,9 @@ class TestManagerVerifiesRelayEvents:
         with patch.object(mgr, "_query_relays", new_callable=AsyncMock) as mock_query:
             mock_query.return_value = [_forged_event()]
             with patch.object(
-                NostrEvent, "verify", side_effect=RuntimeError("secp256k1 required")
+                NostrEvent, "verify", side_effect=RuntimeError("coincurve required")
             ):
-                with pytest.raises(RuntimeError, match="secp256k1"):
+                with pytest.raises(RuntimeError, match="coincurve"):
                     await mgr.discover()
 
     @pytest.mark.asyncio
@@ -436,10 +449,10 @@ class TestManagerVerifiesRelayEvents:
         with patch.object(
             type(mgr), "pubkey", property(lambda self: "aa" * 32)
         ), patch.object(
-            NostrEvent, "verify", side_effect=Secp256k1UnavailableError("secp256k1 missing")
+            NostrEvent, "verify", side_effect=CryptoBackendUnavailableError("coincurve missing")
         ):
             with patch("le_agent_sdk.agent.manager.RelayClient", fake_relay_cls):
-                with pytest.raises(Secp256k1UnavailableError):
+                with pytest.raises(CryptoBackendUnavailableError):
                     async for _ in mgr.listen_requests():
                         pass
 

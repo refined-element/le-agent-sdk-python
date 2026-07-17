@@ -3,22 +3,48 @@
 All notable changes to `le-agent-sdk` are documented here.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-Entries begin at 0.3.3; for earlier history see the
+Entries begin at 0.4.0; for earlier history see the
 [commit log](https://github.com/refined-element/le-agent-sdk-python/commits/main).
 
-## [0.3.3] - 2026-07-17
+## [0.4.0] - 2026-07-17
+
+Security release. Fixes signature verification silently passing, two payment-budget
+bypasses, and unverified relay events — **upgrading is recommended**.
+
+This release also replaces the package's crypto dependency, which is why it is a
+minor bump rather than a patch: see [Dependencies](#dependencies) below.
+
+### Dependencies
+
+- **Replaces the `secp256k1` dependency with `coincurve`, which ships prebuilt
+  wheels.** `secp256k1` required a native build (libsecp256k1 plus a C toolchain)
+  and failed to install on Windows entirely; even where a build was possible it
+  frequently produced an install where `import secp256k1` failed, which is what the
+  verification bug below turned into a silent security hole. `coincurve` provides
+  the same BIP-340 Schnorr primitives over the same curve with no build step.
+
+  For most users this is transparent — `pip install le-agent-sdk` simply starts
+  working where it previously did not. Two things to be aware of:
+
+  - If your project imported `secp256k1` itself and relied on this package to pull
+    it in, it is no longer installed transitively. Declare it directly.
+  - The signature wire format is unchanged. Events signed by 0.3.x verify under
+    0.4.0 and vice versa; the curve, key encoding, and BIP-340 semantics are
+    identical, only the binding differs. This is covered by cross-implementation
+    tests against the .NET SDK and the BIP-340 published vectors.
 
 ### Fixed
 
-- Fixes signature verification silently passing when secp256k1 is unavailable — upgrade recommended.
+- Fixes signature verification silently passing when the crypto backend is
+  unavailable — upgrade recommended.
   `NostrEvent.verify()` returned `True` for any event whose ID matched when the
-  secp256k1 native library could not be imported. The event ID is a plain SHA-256
+  native secp256k1 library could not be imported. The event ID is a plain SHA-256
   over public fields, so it is attacker-computable and proves nothing about
   authenticity — forged capability advertisements and forged attestations under any
-  pubkey were accepted. Verification now raises `Secp256k1UnavailableError` instead
-  of passing. secp256k1 requires a native build and is not importable in some
-  environments where installation otherwise appears to succeed, so this affected
-  real deployments rather than only misconfigured ones.
+  pubkey were accepted. Verification now raises `CryptoBackendUnavailableError`
+  instead of passing. Because the old dependency could not be installed at all on
+  some platforms, this affected real deployments rather than only misconfigured
+  ones — and the dependency swap above removes the condition for nearly all of them.
 - Fixes `pay_and_access()` ignoring `max_amount_sats`, and budget checks being
   skipped for invoices whose amount could not be read — both allowed payments
   above the configured limit; upgrade recommended.
@@ -43,8 +69,12 @@ Entries begin at 0.3.3; for earlier history see the
 
 ### Added
 
-- `Secp256k1UnavailableError`, exported from the package root. Subclasses
+- `CryptoBackendUnavailableError`, exported from the package root. Subclasses
   `RuntimeError`, so existing `except RuntimeError` handlers continue to work.
+  `Secp256k1UnavailableError` is kept as an alias of it.
+- Cross-implementation wire-compatibility tests: events signed by the .NET SDK
+  (via NBitcoin.Secp256k1) are committed as fixtures and verified on every run,
+  alongside the BIP-340 published test vectors.
 
 ### Changed
 
@@ -53,10 +83,20 @@ Entries begin at 0.3.3; for earlier history see the
 
 ### Upgrade notes
 
-- If secp256k1 is not importable in your environment, verification now raises where
-  it previously returned `True`. Any code path that reads events from relays is
-  affected. This is intentional: the previous result was not a weaker check, it was
-  no check. Installing secp256k1 restores normal operation.
+- `pip install le-agent-sdk` no longer needs a C toolchain. If you previously
+  installed build dependencies (libsecp256k1, build-essential, Visual C++ Build
+  Tools) solely for this package, they are no longer required.
+- If the crypto backend is not importable in your environment, verification now
+  raises where it previously returned `True`. Any code path that reads events from
+  relays is affected. This is intentional: the previous result was not a weaker
+  check, it was no check.
 - Callers relying on unknown-amount invoices being paid while `max_amount_sats` is
   set will now see `ValueError`. Either set no limit (explicitly opting out of
   budget enforcement) or use invoices with an explicit amount.
+
+### Note on 0.3.3
+
+An earlier cut of this work was staged as 0.3.3 and was never published to PyPI.
+Its contents are released here as 0.4.0; no 0.3.3 artifact exists. The
+`Secp256k1UnavailableError` name originated in that unreleased cut, so no released
+version ever exported it — it is aliased anyway for anyone tracking the branch.

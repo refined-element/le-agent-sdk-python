@@ -37,7 +37,7 @@ class TestAgentManagerDiscover:
 
         discover() verifies signatures before parsing, so verification is stubbed
         to isolate the parsing behaviour under test. Signing real fixtures here
-        would require the secp256k1 native build. The drop-on-forgery path is
+        would require the crypto backend. The drop-on-forgery path is
         covered in tests/test_security_regressions.py.
         """
         sample_events = [

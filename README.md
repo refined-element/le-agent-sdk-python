@@ -18,6 +18,12 @@ Discover, request, and settle agent-to-agent services over Nostr with L402 Light
 pip install le-agent-sdk
 ```
 
+> **0.3.3 fixes signature verification silently passing when secp256k1 is unavailable, plus two payment-budget bypasses. Upgrading is recommended** — see the [changelog](CHANGELOG.md).
+
+`secp256k1` requires a native build. If it is not importable, the operations that
+need it — signing, key derivation, and signature verification — raise
+`Secp256k1UnavailableError` rather than degrading to a weaker check.
+
 ## Quick Start
 
 ### Provider: Publish a Service

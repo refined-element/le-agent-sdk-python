@@ -11,13 +11,29 @@ import json
 import time
 from typing import Any, Optional
 
-# Signing is optional — if secp256k1 is not installed, events are created unsigned.
+# secp256k1 is a hard dependency, but it requires a native build and can be
+# absent from an otherwise "successful" install. Import defensively so that
+# import-time failure is deferred to the operations that actually need it.
+#
+# Every operation that depends on it — sign(), pubkey_from_private_key() and
+# verify() — raises RuntimeError when it is missing. None of them degrade to a
+# weaker check. Only building/serializing unsigned events works without it.
 try:
     import secp256k1
 
     _HAS_SECP256K1 = True
 except ImportError:
     _HAS_SECP256K1 = False
+
+
+class Secp256k1UnavailableError(RuntimeError):
+    """Raised when an operation needs secp256k1 but it could not be imported.
+
+    Subclasses RuntimeError so existing `except RuntimeError` handlers keep
+    working. Distinguishable so that callers can tell this environment fault
+    apart from an operational error (e.g. a relay disconnect) and avoid
+    retrying something that will never succeed.
+    """
 
 
 class NostrEvent:
@@ -57,7 +73,7 @@ class NostrEvent:
             32-byte x-only public key as hex string.
         """
         if not _HAS_SECP256K1:
-            raise RuntimeError(
+            raise Secp256k1UnavailableError(
                 "secp256k1 library is required for key derivation. "
                 "Install with: pip install secp256k1"
             )
@@ -80,7 +96,7 @@ class NostrEvent:
             64-byte signature as hex string.
         """
         if not _HAS_SECP256K1:
-            raise RuntimeError(
+            raise Secp256k1UnavailableError(
                 "secp256k1 library is required for signing. "
                 "Install with: pip install secp256k1"
             )
@@ -99,8 +115,20 @@ class NostrEvent:
     def verify(event: dict[str, Any]) -> bool:
         """Verify a Nostr event's ID and signature.
 
+        The ID alone is NOT authentication: it is a plain SHA-256 over public
+        fields with no secret input, so anyone can compute a matching ID for an
+        event they forged. Authenticity comes solely from the BIP-340 signature,
+        which requires secp256k1.
+
         Returns:
-            True if valid, False otherwise.
+            True only if the ID matches AND the signature is a valid BIP-340
+            signature over that ID under the claimed pubkey. False otherwise.
+
+        Raises:
+            Secp256k1UnavailableError: If secp256k1 is unavailable, so the
+                signature cannot be checked. This fails closed and loudly,
+                consistent with sign() and pubkey_from_private_key(). It is a
+                RuntimeError subclass and never silently passes.
         """
         # Verify ID
         computed_id = NostrEvent.compute_id(event)
@@ -108,8 +136,12 @@ class NostrEvent:
             return False
 
         if not _HAS_SECP256K1:
-            # Cannot verify signature without secp256k1; only ID was checked
-            return True
+            raise Secp256k1UnavailableError(
+                "secp256k1 library is required for signature verification. "
+                "Refusing to treat the event as verified: the event ID is a "
+                "plain hash of public fields and proves nothing about "
+                "authenticity. Install with: pip install secp256k1"
+            )
 
         pubkey_hex = event.get("pubkey", "")
         sig_hex = event.get("sig", "")

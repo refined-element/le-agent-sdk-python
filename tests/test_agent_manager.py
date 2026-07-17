@@ -8,6 +8,7 @@ import pytest
 from le_agent_sdk.agent.manager import AgentManager
 from le_agent_sdk.models.agreement import AgentServiceAgreement
 from le_agent_sdk.models.capability import AgentCapability, AgentPricing
+from le_agent_sdk.nostr.event import NostrEvent
 
 
 class TestAgentManagerInit:
@@ -32,6 +33,13 @@ class TestAgentManagerInit:
 class TestAgentManagerDiscover:
     @pytest.mark.asyncio
     async def test_discover_returns_capabilities(self):
+        """Authentic events are parsed into capabilities.
+
+        discover() verifies signatures before parsing, so verification is stubbed
+        to isolate the parsing behaviour under test. Signing real fixtures here
+        would require the secp256k1 native build. The drop-on-forgery path is
+        covered in tests/test_security_regressions.py.
+        """
         sample_events = [
             {
                 "id": "ev1",
@@ -56,7 +64,8 @@ class TestAgentManagerDiscover:
         mgr = AgentManager()
         with patch.object(mgr, "_query_relays", new_callable=AsyncMock) as mock_query:
             mock_query.return_value = sample_events
-            caps = await mgr.discover(categories=["ai"])
+            with patch.object(NostrEvent, "verify", return_value=True):
+                caps = await mgr.discover(categories=["ai"])
 
         assert len(caps) == 2
         assert caps[0].service_id == "svc-a"

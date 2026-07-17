@@ -11,6 +11,7 @@ Covered:
   5. AgentManager trusting unverified relay events.
 """
 
+import logging
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -436,6 +437,69 @@ class TestManagerVerifiesRelayEvents:
 
         assert len(received) == 1
         assert received[0].pubkey == "aa" * 32, "forged request was yielded to caller"
+
+    @pytest.mark.asyncio
+    async def test_discover_skips_one_malformed_price_and_keeps_the_batch(self, caplog):
+        """Finding 6 (ledger #41): one bad `price` tag must not DoS discovery.
+
+        A single hostile relay publishing one capability event with an
+        unparseable amount (e.g. ``["price", "abc"]``) used to raise ValueError
+        out of discover()'s list comprehension, dropping EVERY capability in the
+        batch — including all the well-formed ones. Parsing must be per-event:
+        the malformed event is skipped (failed closed) and logged (loudly), and
+        the valid capabilities are still returned.
+
+        The malformed event is placed in the MIDDLE of the batch so a naive
+        fix that only survives a trailing bad event would still fail this.
+        """
+        valid_a = {
+            "id": "good-a",
+            "pubkey": "aa" * 32,
+            "created_at": 1700000000,
+            "kind": 38400,
+            "content": "Valid A",
+            "tags": [["d", "svc-a"], ["price", "100", "sats", "per-request"]],
+            "sig": "",
+        }
+        malformed = {
+            "id": "bad-mid",
+            "pubkey": "cc" * 32,
+            "created_at": 1700000001,
+            "kind": 38400,
+            "content": "Malformed price",
+            "tags": [["d", "svc-bad"], ["price", "abc"]],
+            "sig": "",
+        }
+        valid_b = {
+            "id": "good-b",
+            "pubkey": "bb" * 32,
+            "created_at": 1700000002,
+            "kind": 38400,
+            "content": "Valid B",
+            "tags": [["d", "svc-b"], ["price", "200"]],
+            "sig": "",
+        }
+
+        mgr = AgentManager()
+        with patch.object(mgr, "_query_relays", new_callable=AsyncMock) as mock_query:
+            mock_query.return_value = [valid_a, malformed, valid_b]
+            # Authenticity is orthogonal to parsing: stub verify() True so every
+            # event reaches the parse path (the drop-on-forgery path is tested
+            # separately above).
+            with patch.object(NostrEvent, "verify", return_value=True):
+                with caplog.at_level(logging.WARNING):
+                    caps = await mgr.discover()
+
+        # The batch must NOT abort: both well-formed capabilities survive.
+        assert len(caps) == 2
+        assert {c.service_id for c in caps} == {"svc-a", "svc-b"}
+        # The malformed event is skipped, not included.
+        assert "svc-bad" not in {c.service_id for c in caps}
+        # ...and its rejection is loud: a WARNING naming the offending event id.
+        assert any(
+            record.levelno == logging.WARNING and "bad-mid" in record.getMessage()
+            for record in caplog.records
+        ), "malformed event was skipped silently instead of logged"
 
     @pytest.mark.asyncio
     async def test_listen_requests_surfaces_missing_dep_without_reconnect_storm(self):

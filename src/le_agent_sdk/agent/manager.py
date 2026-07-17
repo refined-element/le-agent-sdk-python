@@ -219,10 +219,25 @@ class AgentManager:
         )
 
         raw_events = await self._query_relays([nostr_filter], timeout=timeout)
-        return [
-            AgentCapability.from_nostr_event(e)
-            for e in self._filter_authentic(raw_events)
-        ]
+
+        # Parse each authenticated event INDEPENDENTLY. A malformed tag on one
+        # event (e.g. an unparseable `price` amount) must not abort the whole
+        # batch: a single hostile relay publishing one bad capability event
+        # would otherwise DoS discovery for every agent. Fail closed, loudly —
+        # the offending event is skipped and the skip is logged as a WARNING,
+        # never silently swallowed.
+        capabilities: list[AgentCapability] = []
+        for event in self._filter_authentic(raw_events):
+            try:
+                capabilities.append(AgentCapability.from_nostr_event(event))
+            except Exception as exc:
+                logger.warning(
+                    "Skipping malformed capability event %.16s...: %s. "
+                    "The relay may be malicious or misbehaving.",
+                    event.get("id", "<no id>"),
+                    exc,
+                )
+        return capabilities
 
     async def publish_capability(self, capability: AgentCapability) -> str:
         """Publish a capability advertisement to relays.

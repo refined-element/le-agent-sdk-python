@@ -502,6 +502,92 @@ class TestManagerVerifiesRelayEvents:
         ), "malformed event was skipped silently instead of logged"
 
     @pytest.mark.asyncio
+    async def test_discover_skips_field_missing_event_and_keeps_batch(self, caplog):
+        """Vector A (ledger #41): a dict missing committed fields must not DoS.
+
+        _is_event_authentic -> NostrEvent.verify -> compute_id subscripts
+        pubkey/created_at/kind/tags/content. A relay event missing any of them
+        raised KeyError out of _filter_authentic, killing the whole discover()
+        batch — the same single-hostile-event DoS the price fix set out to
+        close, one step earlier in the pipeline. The malformed event must be
+        dropped (failed closed) and logged (loudly); the two genuinely-signed
+        capabilities must still come back.
+
+        These are REAL signed events (coincurve is available in the test env),
+        and verify() is deliberately NOT stubbed so the malformed event actually
+        reaches the id-computation that raises. Poison event is mid-batch.
+        """
+        signed_a = NostrEvent.create(
+            kind=38400,
+            content="Valid A",
+            tags=[["d", "svc-a"], ["price", "100"]],
+            private_key="11" * 32,
+        )
+        signed_b = NostrEvent.create(
+            kind=38400,
+            content="Valid B",
+            tags=[["d", "svc-b"], ["price", "200"]],
+            private_key="22" * 32,
+        )
+        # Missing pubkey/created_at/tags/content -> verify() raises KeyError.
+        field_missing = {"id": "bad-missing", "kind": 38400}
+
+        mgr = AgentManager()
+        with patch.object(mgr, "_query_relays", new_callable=AsyncMock) as mock_query:
+            mock_query.return_value = [signed_a, field_missing, signed_b]
+            with caplog.at_level(logging.WARNING):
+                caps = await mgr.discover()
+
+        assert len(caps) == 2
+        assert {c.service_id for c in caps} == {"svc-a", "svc-b"}
+        assert "bad-missing" not in {c.event_id for c in caps}
+        assert any(
+            record.levelno == logging.WARNING and "bad-missing" in record.getMessage()
+            for record in caplog.records
+        ), "field-missing event was dropped silently instead of logged"
+
+    @pytest.mark.asyncio
+    async def test_discover_skips_non_dict_relay_payload_and_keeps_batch(self, caplog):
+        """Vector B (ledger #41): a non-dict relay payload must not DoS.
+
+        _query_relays did ``event.get("id", "")`` over whatever the relay
+        returned. A hostile relay sending a str/list instead of an event dict
+        raised AttributeError out of discover(). It must be dropped before the
+        ``.get``, keeping the valid capabilities.
+
+        _query_relay (the PER-relay method) is patched so the REAL _query_relays
+        runs its new isinstance guard. Poison payload is mid-batch.
+        """
+        signed_a = NostrEvent.create(
+            kind=38400,
+            content="Valid A",
+            tags=[["d", "svc-a"], ["price", "100"]],
+            private_key="11" * 32,
+        )
+        signed_b = NostrEvent.create(
+            kind=38400,
+            content="Valid B",
+            tags=[["d", "svc-b"], ["price", "200"]],
+            private_key="22" * 32,
+        )
+
+        mgr = AgentManager()
+
+        async def fake_query_relay(url, filters, timeout):
+            return [signed_a, "not-a-dict", signed_b]
+
+        with patch.object(mgr, "_query_relay", side_effect=fake_query_relay):
+            with caplog.at_level(logging.WARNING):
+                caps = await mgr.discover()
+
+        assert len(caps) == 2
+        assert {c.service_id for c in caps} == {"svc-a", "svc-b"}
+        assert any(
+            record.levelno == logging.WARNING and "non-dict" in record.getMessage().lower()
+            for record in caplog.records
+        ), "non-dict relay payload was dropped silently instead of logged"
+
+    @pytest.mark.asyncio
     async def test_listen_requests_surfaces_missing_dep_without_reconnect_storm(self):
         """A missing dep must not be mistaken for a relay fault and retried."""
         event = _forged_event("aa" * 32)

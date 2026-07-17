@@ -82,7 +82,31 @@ class AgentManager:
         fault affecting every event, and silently returning zero results would
         misrepresent it as "nothing found".
         """
-        if NostrEvent.verify(event):
+        try:
+            verified = NostrEvent.verify(event)
+        except RuntimeError:
+            # Environment/crypto-backend fault affecting every event — propagate
+            # (fail closed, loudly). CryptoBackendUnavailableError is a
+            # RuntimeError subclass, and a hostile event cannot induce a
+            # RuntimeError from verify() (malformed input raises KeyError/
+            # TypeError, dropped below), so propagating RuntimeError surfaces a
+            # backend outage without letting one bad event abort the batch.
+            # Downgrading it to "unauthentic" would silently return zero results
+            # and misrepresent a backend outage as "nothing found".
+            raise
+        except Exception as exc:
+            # A hostile/malformed relay event (missing committed field, wrong
+            # types) can make verify() raise while computing the id. Drop only
+            # that event — one bad event must not abort the whole query.
+            logger.warning(
+                "Dropping malformed relay event %.16s...: %s. "
+                "The relay may be malicious or misbehaving.",
+                event.get("id", "<no id>"),
+                exc,
+            )
+            return False
+
+        if verified:
             return True
 
         logger.warning(
@@ -166,6 +190,16 @@ class AgentManager:
         for result in results:
             if isinstance(result, list):
                 for event in result:
+                    if not isinstance(event, dict):
+                        # A hostile relay can send a non-dict payload (str/list).
+                        # Drop it before `.get` raises AttributeError out of the
+                        # whole query — one bad event must not DoS discovery.
+                        logger.warning(
+                            "Dropping non-dict relay payload of type %s. "
+                            "The relay may be malicious or misbehaving.",
+                            type(event).__name__,
+                        )
+                        continue
                     event_id = event.get("id", "")
                     if event_id and event_id not in seen_ids:
                         seen_ids.add(event_id)

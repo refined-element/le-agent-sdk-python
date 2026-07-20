@@ -1,0 +1,37 @@
+{
+  "behavior": "negotiable-floor-parsing",
+  "reference": "le-agent-sdk ledger #61 (typescript floor uses parseInt -> keeps NaN/truncated)",
+  "entrypoint": "AgentCapability.fromNostrEvent (ts) / from_nostr_event (py) / FromNostrEvent (.NET)",
+  "description": "How each port parses the ['negotiable','floor','<amount>'] branch of a capability. python and .NET reject a malformed floor amount (throw -> the whole event is skipped by discover). typescript used parseInt(), which returns NaN for 'abc' and silently truncates '10.5'->10 / '100abc'->100 and NEVER throws, so it kept a bogus minPriceSats. The golden REJECTS a malformed floor: minPriceSats must never be NaN/truncated, because a NaN floor passes every price-floor comparison downstream (every comparison against NaN is false).",
+  "outcomes": {
+    "ok": "Parse succeeds; 'negotiable' and 'minPriceSats' (nullable) equal the expected values.",
+    "reject": "The capability-parse entrypoint throws (ValueError / Error / FormatException)."
+  },
+  "vectors": [
+    {
+      "name": "valid-floor",
+      "tags": [["d", "conformance"], ["negotiable", "floor", "5000"]],
+      "expect": { "outcome": "ok", "negotiable": true, "minPriceSats": 5000 }
+    },
+    {
+      "name": "negotiable-false",
+      "tags": [["d", "conformance"], ["negotiable", "false"]],
+      "expect": { "outcome": "ok", "negotiable": false, "minPriceSats": null }
+    },
+    {
+      "name": "reject-floor-non-numeric",
+      "tags": [["d", "conformance"], ["negotiable", "floor", "abc"]],
+      "expect": { "outcome": "reject" }
+    },
+    {
+      "name": "reject-floor-decimal",
+      "tags": [["d", "conformance"], ["negotiable", "floor", "10.5"]],
+      "expect": { "outcome": "reject" }
+    },
+    {
+      "name": "reject-floor-trailing-suffix",
+      "tags": [["d", "conformance"], ["negotiable", "floor", "100abc"]],
+      "expect": { "outcome": "reject" }
+    }
+  ]
+}

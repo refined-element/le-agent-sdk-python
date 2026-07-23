@@ -6,6 +6,24 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 
+def _parse_sats_amount(value: str) -> int:
+    """Parse a non-negative integer sats amount, or raise ``ValueError``.
+
+    A price/floor amount MUST be a non-negative integer. ``int()`` already rejects
+    non-numeric / decimal / trailing-suffix values (``ValueError``); this
+    additionally rejects a **negative** amount (ledger #69): a negative advertised
+    price/floor is never meaningful and accepting it is a fail-open smell. The
+    rejection raises the *same* ``ValueError`` as any other malformed amount so the
+    parse-error path (``discover()``'s per-event skip) treats it identically. Zero
+    is valid (a free service). Shared by BOTH the price-tag and negotiable-floor
+    parse so the two can never drift apart.
+    """
+    amount = int(value)
+    if amount < 0:
+        raise ValueError(f"Sats amount must be non-negative, got: {value!r}")
+    return amount
+
+
 @dataclass
 class AgentPricing:
     """Pricing information for an agent capability."""
@@ -23,7 +41,7 @@ class AgentPricing:
         """Parse from a Nostr 'price' tag: ['price', amount, unit, model]."""
         if len(tag) < 2:
             raise ValueError(f"Invalid price tag: {tag}")
-        amount = int(tag[1])
+        amount = _parse_sats_amount(tag[1])
         unit = tag[2] if len(tag) > 2 else "sats"
         model = tag[3] if len(tag) > 3 else "per-request"
         return cls(amount=amount, unit=unit, model=model)
@@ -92,7 +110,7 @@ class AgentCapability:
                     cap.negotiable = True
                 elif tag[1] == "floor" and len(tag) > 2:
                     cap.negotiable = True
-                    cap.min_price_sats = int(tag[2])
+                    cap.min_price_sats = _parse_sats_amount(tag[2])
 
         return cap
 

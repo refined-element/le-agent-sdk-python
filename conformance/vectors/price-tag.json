@@ -1,0 +1,55 @@
+{
+  "behavior": "price-tag-parsing",
+  "reference": "le-agent-sdk ledger #41 (price-tag divergence), #69 (reject negative amount)",
+  "entrypoint": "AgentCapability.fromNostrEvent (ts) / from_nostr_event (py) / FromNostrEvent (.NET)",
+  "description": "How each port parses a capability 'price' tag amount. Driven through the public capability-parse entrypoint (not the lower-level fromTag/ParseSats helper) because that is the one uniform public surface across all three ports and the real production code path. A price amount MUST be a non-negative integer: a malformed amount (non-numeric / decimal / trailing-suffix) AND a negative amount are both rejected (throw), never silently coerced to NaN/0/truncated or accepted as-is, because a bogus or negative price sails through every downstream budget/affordability check. Zero is valid (a free service).",
+  "outcomes": {
+    "ok": "Parse succeeds; the first parsed price amount equals priceSats. 'unit'/'model' are asserted only by ports that model them (python, typescript); the .NET port stores a single integer PriceSats and ignores unit/model.",
+    "reject": "The capability-parse entrypoint throws (ValueError / Error / FormatException).",
+    "no-price": "Parse succeeds but records no price (python/typescript: empty pricing list; .NET: PriceSats == 0, its default)."
+  },
+  "vectors": [
+    {
+      "name": "valid-minimal",
+      "tags": [["d", "conformance"], ["price", "100"]],
+      "expect": { "outcome": "ok", "priceSats": 100, "unit": "sats", "model": "per-request" }
+    },
+    {
+      "name": "valid-unit-and-model",
+      "tags": [["d", "conformance"], ["price", "100", "msat", "per-call"]],
+      "expect": { "outcome": "ok", "priceSats": 100, "unit": "msat", "model": "per-call" }
+    },
+    {
+      "name": "zero-accepted",
+      "note": "Zero is a valid advertised price (a free service). Pins that rejecting negatives (ledger #69) did not over-reject zero.",
+      "tags": [["d", "conformance"], ["price", "0"]],
+      "expect": { "outcome": "ok", "priceSats": 0, "unit": "sats", "model": "per-request" }
+    },
+    {
+      "name": "reject-non-numeric",
+      "tags": [["d", "conformance"], ["price", "abc"]],
+      "expect": { "outcome": "reject" }
+    },
+    {
+      "name": "reject-decimal",
+      "tags": [["d", "conformance"], ["price", "10.5"]],
+      "expect": { "outcome": "reject" }
+    },
+    {
+      "name": "reject-trailing-suffix",
+      "tags": [["d", "conformance"], ["price", "100abc"]],
+      "expect": { "outcome": "reject" }
+    },
+    {
+      "name": "missing-amount",
+      "tags": [["d", "conformance"], ["price"]],
+      "expect": { "outcome": "no-price" }
+    },
+    {
+      "name": "negative-amount-rejected",
+      "note": "Negatives are rejected by decision (ledger #69, 2026-07-22): a negative advertised price is never meaningful and is a fail-open smell, so it is treated like any other malformed amount (throw -> the event is skipped). Was previously accepted by all three ports and flagged as an open designQuestion; the question is now decided. Zero stays valid (see zero-accepted).",
+      "tags": [["d", "conformance"], ["price", "-5"]],
+      "expect": { "outcome": "reject" }
+    }
+  ]
+}

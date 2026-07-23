@@ -1,0 +1,25 @@
+{
+  "behavior": "discover-batch-resilience",
+  "reference": "le-agent-sdk ledger #41",
+  "entrypoint": "AgentManager.discover (per-event), plus each port's relay-ingest layer",
+  "description": "A discovery batch of [valid, malformed, valid] relay payloads MUST return the valid capabilities. One malformed or hostile payload must never abort the batch and take every valid capability down with it (a single-hostile-relay DoS). The skip must fail closed and LOUDLY (a warning naming the offending payload), never silently. Each malformed kind is dropped at the layer where a given port first meets it (parse, authenticity, or relay-frame merge); the shared contract is the scenario set + expectedSurvivors, and each port realizes it at its own layer (see conformance/README.md).",
+  "batchLayout": ["valid", "malformed", "valid"],
+  "expectedSurvivors": 2,
+  "scenarios": [
+    {
+      "name": "bad-price",
+      "malformed": "a capability event whose price tag amount is unparseable ([\"price\",\"abc\"])",
+      "droppedAt": "per-event capability parse (fromNostrEvent throws, discover skips just that event)"
+    },
+    {
+      "name": "missing-committed-field",
+      "malformed": "a relay payload missing / mistyping a field committed by the Nostr event id, so it cannot be authenticated or frame-parsed",
+      "droppedAt": "authenticity check (py/ts) or wire-frame parse (.NET TryParseEventMessage) — before the payload is trusted"
+    },
+    {
+      "name": "non-dict-payload",
+      "malformed": "a relay payload that is not an event object at all (e.g. a bare string)",
+      "droppedAt": "relay merge (py/ts queryRelays) or wire-frame parse (.NET TryParseEventMessage)"
+    }
+  ]
+}

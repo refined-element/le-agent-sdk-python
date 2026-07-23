@@ -298,11 +298,16 @@ class TestUnknownAmountIsRefused:
         assert paid == []
 
     @pytest.mark.asyncio
-    async def test_unparseable_invoice_still_paid_when_no_budget_configured(self):
-        """No budget configured == caller explicitly accepted unbounded payment.
+    async def test_unparseable_invoice_refused_even_when_no_budget_configured(self):
+        """Ledger #71: an unknown/unbounded amount is refused even with no max.
 
-        Refusing here would break the documented `None means no limit` contract
-        without adding safety: with no limit, a known 10M-sat invoice is paid too.
+        Previously this PAID (fail-open): with ``max_amount_sats=None`` the gate
+        short-circuited and handed ANY invoice to the wallet, so a caller who
+        forgot to set a ceiling delegated an unbounded, unaudited spend. The
+        fail-closed rule is now independent of the ceiling: an amount that cannot
+        be determined (amountless / unparseable / <= 0) is ALWAYS refused. A
+        *known* amount with no ceiling is still paid (that is the caller's
+        documented opt-out) — see test_known_amount_paid_when_no_budget_configured.
         """
         garbage = "not-a-parseable-bolt11-invoice"
         paid = []
@@ -318,10 +323,37 @@ class TestUnknownAmountIsRefused:
             mock_http.request.side_effect = [_make_402(garbage), _make_ok()]
             mock_ensure.return_value = mock_http
 
+            with pytest.raises(ValueError, match="amount"):
+                await client.access("https://x.test/r")
+
+        assert paid == [], "unbounded invoice was handed to the wallet with no max set"
+
+    @pytest.mark.asyncio
+    async def test_known_amount_paid_when_no_budget_configured(self):
+        """The opt-out still holds for a KNOWN amount: no ceiling => pay.
+
+        This pins the other half of ledger #71 so the fail-closed fix does not
+        over-reach into forcing every payment to declare a max. ``lnbc10u`` is a
+        determinable 1000-sat invoice; with no ceiling it is paid.
+        """
+        known = "lnbc10u1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rq"  # 1000 sats
+        paid = []
+
+        async def pay_callback(invoice):
+            paid.append(invoice)
+            return "ab" * 32
+
+        client = L402Client(pay_invoice_callback=pay_callback, max_amount_sats=None)
+
+        with patch.object(client, "_ensure_client") as mock_ensure:
+            mock_http = AsyncMock()
+            mock_http.request.side_effect = [_make_402(known), _make_ok()]
+            mock_ensure.return_value = mock_http
+
             resp = await client.access("https://x.test/r")
 
         assert resp.status_code == 200
-        assert paid == [garbage]
+        assert paid == [known]
 
 
 class TestReputationIgnoresOutOfRangeRatings:

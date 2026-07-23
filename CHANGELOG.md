@@ -6,6 +6,10 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 Entries begin at 0.4.0; for earlier history see the
 [commit log](https://github.com/refined-element/le-agent-sdk-python/commits/master).
 
+## [0.4.2] - 2026-07-23
+
+**Security fix — upgrade recommended.** The L402 amount/budget gate no longer pays an invoice whose amount can't be bounded when no `max_amount_sats` is configured. Previously an unset max short-circuited the whole check and paid *anything* — an unbounded, unaudited spend whenever a caller forgot to set a ceiling. Now an unknown/unbounded/non-positive amount is refused regardless of whether a max is set; a known positive amount with no max still pays (opt-out preserved).
+
 ## [0.4.1] - 2026-07-17
 
 Security fix. Hardens capability discovery against malformed events from a hostile

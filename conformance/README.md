@@ -36,9 +36,14 @@ outcome vocabulary, and every vector's expected outcome.
 
 - **Price parsing agrees across all three ports.** Valid amounts parse; `abc`,
   `10.5`, `100abc` are rejected (throw); a bare `["price"]` records no price; and
-  a **negative** amount (`-5`) is currently **accepted by all three**. Whether a
-  negative price *should* be rejected is a genuine design question — flagged in
-  `price-tag.json` as `designQuestion`, **not** silently changed on one side.
+  `0` is valid (a free service). A **negative** amount (`-5`) was originally
+  **accepted by all three** and flagged in `price-tag.json` as an open
+  `designQuestion`. That question is now **decided (ledger #69, 2026-07-22):
+  a negative price/floor is rejected** — it is never meaningful and accepting it
+  is a fail-open smell, so it is treated like any other malformed amount (throw ->
+  the event is skipped). The golden now REJECTS `-5` (`negative-amount-rejected`)
+  and pins `0` as valid (`zero-accepted`); all three ports were tightened to
+  conform.
 - **Negotiable-floor did NOT agree.** Python and .NET reject a malformed floor
   amount (throw -> the event is skipped). TypeScript used `parseInt()`, which
   returns `NaN` for `"abc"` and silently truncates `"10.5"`->`10` /
@@ -46,7 +51,10 @@ outcome vocabulary, and every vector's expected outcome.
   by the oracle, the one that keeps it is the bug (ledger #61). The golden REJECTS
   a malformed floor and the TypeScript port was fixed to conform (a `NaN` floor is
   worse than useless: every price-floor comparison against `NaN` is false, so a
-  malformed floor silently passes downstream instead of being rejected).
+  malformed floor silently passes downstream instead of being rejected). The floor
+  amount is parsed with the **same** non-negative-integer rules as the price
+  amount, so a **negative** floor is rejected too (ledger #69; golden
+  `negative-floor-rejected`, with `0` pinned valid by `zero-floor-accepted`).
 
 ## How each port wires it into CI
 

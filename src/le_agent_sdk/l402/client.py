@@ -329,38 +329,42 @@ class L402Client:
         challenge: L402Challenge | MppChallenge,
         effective_max: Optional[int],
     ) -> None:
-        """Enforce the payment ceiling before any invoice reaches the wallet.
+        """Gate an invoice before any of it reaches the wallet.
 
-        The invariant is: an amount that cannot be determined is refused.
-        A budget is a guarantee ("never pay more than N"), and an invoice whose
-        amount cannot be proven <= N cannot be paid without breaking it. The
-        wallet callback is arbitrary caller-supplied code, so handing it an
-        unbounded invoice delegates an unbounded spend.
+        Two independent rules (ledger #71):
 
-        No ceiling configured (None) means the caller explicitly opted out of
-        budget enforcement, so any invoice — known or unknown — is allowed
-        through; refusing there would add no safety and break the documented
-        "None means no limit" contract.
+        1. **Unknown/unbounded amount => ALWAYS refuse**, whether or not a ceiling
+           is configured. An amount that cannot be determined (amountless
+           invoice, unparseable, or <= 0 — all of which the decoder reports as
+           None) cannot be proven bounded, and the wallet callback is arbitrary
+           caller-supplied code: handing it such an invoice delegates an
+           unbounded, unaudited spend. This is the fail-closed core. Previously
+           the gate short-circuited when no max was set and paid ANYTHING, so a
+           caller who merely forgot to set a ceiling opted into unbounded spend.
+
+        2. **Ceiling comparison** (``amount > max`` => refuse) applies ONLY when a
+           max is configured. With no ceiling the caller has opted out of a limit
+           for a *known* amount — that is their explicit choice and is honored;
+           only the unknown-amount hole above is closed unconditionally.
 
         Raises:
-            ValueError: If the invoice exceeds the ceiling, or if a ceiling is
-                configured and the amount cannot be determined.
+            ValueError: If the amount cannot be determined (always), or if a
+                ceiling is configured and the amount exceeds it.
         """
-        if effective_max is None:
-            return
-
         invoice_sats = self._decode_invoice_amount_sats(challenge.invoice)
 
+        # Rule 1: fail closed on an amount we cannot bound, ceiling or not.
         if invoice_sats is None:
             raise ValueError(
-                "Invoice amount could not be determined, and a maximum of "
-                f"{effective_max} sats is configured. Refusing to pay: an "
-                "invoice with no verifiable amount cannot be checked against a "
-                "budget and would hand an unbounded payment to the wallet "
-                f"callback. Invoice: {challenge.invoice[:40]}..."
+                "Invoice amount could not be determined (amountless, unparseable, "
+                "or <= 0). Refusing to pay: an invoice with no verifiable amount "
+                "cannot be bounded and would hand an unbounded payment to the "
+                "wallet callback — this is refused even when no maximum is "
+                f"configured. Invoice: {challenge.invoice[:40]}..."
             )
 
-        if invoice_sats > effective_max:
+        # Rule 2: enforce the ceiling only when one was set.
+        if effective_max is not None and invoice_sats > effective_max:
             raise ValueError(
                 f"Invoice amount ({invoice_sats} sats) exceeds maximum allowed "
                 f"({effective_max} sats). Invoice: {challenge.invoice[:40]}..."

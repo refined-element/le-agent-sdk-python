@@ -6,6 +6,14 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 Entries begin at 0.4.0; for earlier history see the
 [commit log](https://github.com/refined-element/le-agent-sdk-python/commits/master).
 
+## [0.4.3] - 2026-10-22
+
+Release-pipeline hardening only; no change to the SDK. Every CI job that installs with pip
+(the ubuntu and windows test matrix and the publish job) first runs a hash-pinned bootstrap:
+pip 26.2.2 and certifi 2026.10.19, SHA256-verified and installed from the verified wheel,
+never through the runner's pre-installed pip, with a version gate afterwards. A stdlib-only
+test pins the workflows. Part of the 2026-10-22 eMudhra CA / installer remediation.
+
 ## [0.4.2] - 2026-07-23
 
 **Security fix — upgrade recommended.** The L402 amount/budget gate no longer pays an invoice whose amount can't be bounded when no `max_amount_sats` is configured. Previously an unset max short-circuited the whole check and paid *anything* — an unbounded, unaudited spend whenever a caller forgot to set a ceiling. Now an unknown/unbounded/non-positive amount is refused regardless of whether a max is set; a known positive amount with no max still pays (opt-out preserved).
